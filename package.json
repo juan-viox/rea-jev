@@ -1,6 +1,6 @@
 {
   "name": "rea-jev",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Claude Code plugin that pairs REA (Reverse Engineer Anything, rea-agents) with TypeSafe's Jev System One decision model: hooks route the target, gate risky REA calls, score evidence, and check completeness; a jev CLI lets the agent rank, classify, and verify.",
   "type": "module",
   "private": false,

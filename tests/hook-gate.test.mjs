@@ -432,3 +432,16 @@ describe('shadow mode', () => {
     assert.equal(lastPre(session).decision, 'ask');
   });
 });
+
+describe('no declared target', () => {
+  test('enforce asks instead of denying when the session has no declared target, even on a decisive within_scope', async () => {
+    script({ within_scope: 0.1, irreversible: 0.1, runtime_requested: 0.9 });
+    const session = newSession('gate');
+    seedLedger(tmp, session, [{ ...routeEvent, declared_target: null }]);
+    const r = await runHook('hook-gate', payload('pre-capture-process-in-scope.json', { session_id: session, cwd: ROOT }), env({ mode: 'enforce' }));
+    assert.equal(decision(r), 'ask');
+    assert.match(reason(r), /no artifact has been declared for this investigation yet/);
+    assert.equal(lastPre(session).decision, 'ask');
+    assert.equal(lastPre(session).source, 'jev');
+  });
+});

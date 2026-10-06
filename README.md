@@ -153,7 +153,8 @@ Set with the plugin option **mode** or `REA_JEV_MODE`.
   inspection call, and a non-loopback `cdp_endpoint`/`inspector_endpoint` on
   any REA tool. `enforce` adds one Jev-based deny: a runtime or extraction call
   whose `within_scope` falls below `T_GATE_SCOPE` with a decisive answer
-  (confidence at or above the confirm band); a near-coin-flip only asks. The
+  (confidence at or above the confirm band) while a target is declared; a
+  near-coin-flip, or a session with no declared target, only asks. The
   Stop hook likewise blocks only on decisive answers and never when your
   message cites the Evidence IDs that were returned.
 - **What leaves the machine.** Only the fields each question needs: a prompt
