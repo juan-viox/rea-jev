@@ -213,6 +213,26 @@ describe('rule 3: hard rules (local)', () => {
     assert.doesNotMatch(reason(r), /sk-live/);
     assert.doesNotMatch(JSON.stringify(ledgerEvents(tmp, session)), /sk-live-0123456789/);
   });
+  test('the shell variables PWD and OLDPWD are not credentials', async () => {
+    const before = fake.requests.length;
+    const session = newSession('gate');
+    seedLedger(tmp, session, [routeEvent]);
+    script({ within_scope: 0.9, irreversible: 0.1, runtime_requested: 0.9 });
+    const r = await runHook(
+      'hook-gate',
+      payload('pre-capture-process-env-secret.json', { session_id: session, cwd: ROOT, tool_input: { executable: 'node', environment: { PWD: `${ROOT}/tests`, OLDPWD: '/tmp', PORT: '3000' } } }),
+      env(),
+    );
+    assert.equal(r.stdout, '', 'no credential ask');
+    assert.equal(fake.requests.length, before + 1, 'the call reached the Jev gate');
+    const list = await runHook(
+      'hook-gate',
+      payload('pre-capture-process-env-secret.json', { session_id: newSession('gate'), cwd: ROOT, tool_input: { executable: 'node', environment: ['PWD=/home/user/project', 'DB_PWD=hunter22'] } }),
+      env(),
+    );
+    assert.equal(decision(list), 'ask');
+    assert.match(reason(list), /\(DB_PWD\)/);
+  });
   test('environment as KEY=VALUE strings is checked too', async () => {
     const r = await runHook(
       'hook-gate',
@@ -253,6 +273,70 @@ describe('rule 4: Jev gate', () => {
     seedLedger(tmp, sE, [routeEvent]);
     const enforce = await runHook('hook-gate', payload('pre-capture-process-in-scope.json', { session_id: sE, cwd: ROOT }), env({ mode: 'enforce' }));
     assert.equal(decision(enforce), 'deny');
+  });
+  test('enforce denies only on a decisive within_scope: p 0.29 (confidence 0.42, escalate) asks, p 0.2 (0.60) denies', async () => {
+    script({ within_scope: 0.29, irreversible: 0.1, runtime_requested: 0.9 });
+    const s1 = newSession('gate');
+    seedLedger(tmp, s1, [routeEvent]);
+    const coinFlip = await runHook('hook-gate', payload('pre-capture-process-in-scope.json', { session_id: s1, cwd: ROOT }), env({ mode: 'enforce' }));
+    assert.equal(decision(coinFlip), 'ask');
+    assert.match(reason(coinFlip), /within_scope 0\.29\); confirm it belongs to the investigation/);
+    script({ within_scope: 0.2, irreversible: 0.1, runtime_requested: 0.9 });
+    const s2 = newSession('gate');
+    seedLedger(tmp, s2, [routeEvent]);
+    const clear = await runHook('hook-gate', payload('pre-capture-process-in-scope.json', { session_id: s2, cwd: ROOT }), env({ mode: 'enforce' }));
+    assert.equal(decision(clear), 'deny');
+  });
+  test('user_request is the last reverse-engineering request (1200-char field), not a later follow-up prompt', async () => {
+    const before = fake.requests.length;
+    const session = newSession('gate');
+    const longRequest = `${routeEvent.prompt_excerpt} ${'Also trace the PDF path. '.repeat(12)}`.trim();
+    seedLedger(tmp, session, [
+      { ...routeEvent, prompt_for_jev: longRequest, decision: 'route' },
+      { kind: 'route', prompt_excerpt: 'thanks, format that as a table', prompt_for_jev: 'thanks, format that as a table', answers: { is_re_task: { type: 'noul', noul: 0.05 } }, declared_target: SAMPLE_APP, decision: 'silent' },
+    ]);
+    script({ within_scope: 0.9, irreversible: 0.1, runtime_requested: 0.1 });
+    const r = await runHook('hook-gate', payload('pre-capture-process-in-scope.json', { session_id: session, cwd: ROOT }), env());
+    assert.equal(fake.requests[before].body.state.user_request, longRequest);
+    assert.equal(decision(r), 'ask', 'runtime_requested is judged against the RE request, so the rule still fires');
+  });
+  test('an out-of-range within_scope is dropped: enforce stays silent instead of denying on -2', async () => {
+    script({ within_scope: { raw: { type: 'noul', noul: -2 } }, irreversible: 0.1, runtime_requested: 0.9 });
+    const session = newSession('gate');
+    seedLedger(tmp, session, [routeEvent]);
+    const r = await runHook('hook-gate', payload('pre-capture-process-in-scope.json', { session_id: session, cwd: ROOT }), env({ mode: 'enforce' }));
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(r.stdout, '');
+    assert.equal(lastPre(session).decision, 'silent');
+  });
+  test('429 then 200 → the retry happens in the real hook process and the verdict is emitted', async () => {
+    const s = await startFakeJev({ scenario: '429-then-200', script: { within_scope: 0.1, irreversible: 0.1, runtime_requested: 0.9 } });
+    try {
+      const session = newSession('gate');
+      seedLedger(tmp, session, [routeEvent]);
+      const r = await runHook('hook-gate', payload('pre-capture-process-in-scope.json', { session_id: session, cwd: ROOT }), env({ fakeUrl: s.url }));
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(decision(r), 'ask');
+      assert.equal(s.requests.length, 2);
+    } finally {
+      await s.close();
+    }
+  });
+  test('a slow Jev never outlives the safety timer: the pre event is still written and the hook exits in time', async () => {
+    const slow = await startFakeJev({ scenario: 'slow:30000' });
+    try {
+      const session = newSession('gate');
+      seedLedger(tmp, session, [routeEvent]);
+      const r = await runHook('hook-gate', payload('pre-capture-process-in-scope.json', { session_id: session, cwd: ROOT }), env({ fakeUrl: slow.url, extra: { REA_JEV_TIMEOUT_MS: '60000' } }));
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(r.stdout, '');
+      assert.ok(r.ms < 9500, `took ${r.ms} ms`);
+      const pre = lastPre(session);
+      assert.equal(pre?.decision, 'silent');
+      assert.equal(pre?.source, 'jev');
+    } finally {
+      await slow.close();
+    }
   });
   test('irreversible above T_GATE_IRREV → ask; the threshold reads REA_JEV_T_GATE_IRREV', async () => {
     script({ within_scope: 0.9, irreversible: 0.9, runtime_requested: 0.9 });

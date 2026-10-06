@@ -28,7 +28,7 @@ JavaScript tree or a .NET assembly.
 | PE with a CLI header (.NET `.dll` or `.exe`) | managed_assembly | `inspect_managed_artifact` | `inspect_managed_members`, `inspect_managed_native_boundaries` |
 | `.apk` | android_apk | `inspect_android_package` when the REA tool list has it; otherwise `open_binary` then `inspect_artifact` | `inspect_android_class`, `inspect_android_method` |
 | `.zip`, `.ipa`, `.dmg`, `.msix`, `.appx`, or another container | package_archive | `open_binary` | `inspect_artifact`, then re-route the inner artifact |
-| http(s) URL, or a loopback CDP endpoint | website_in_browser | `list_browser_targets` | `inspect_web_page`, `analyze_web_bundle`; `observe_web_session` only if asked |
+| A page the user has open in a browser started with remote debugging (a loopback CDP endpoint such as `http://127.0.0.1:9222`; a bare page URL is not enough, ask for the endpoint) | website_in_browser | `list_browser_targets` | `inspect_web_page`, `analyze_web_bundle`; `observe_web_session` only if asked |
 | Running Electron or Node with an inspector endpoint | electron_or_node_runtime | `list_electron_targets` or `list_javascript_runtime_targets` | `inspect_electron_page`; `observe_javascript_runtime` only if asked |
 | A source repository the user already has | source_repository | none | Use ordinary repository tools; REA is not needed |
 
@@ -50,7 +50,9 @@ capture inside the declared target.
 Keep observations, inferences, and unknowns apart. Cite `ev_` IDs for every
 conclusion. Use `record_unknown` for material gaps. Close a native session with
 `close_binary`. Before writing a conclusion down, check it with
-`node "${CLAUDE_PLUGIN_ROOT}/scripts/jev.mjs" verify`. Finish with
+`node "${CLAUDE_PLUGIN_ROOT}/scripts/jev.mjs" verify --claim-file <file> --evidence <file>`
+(write the claim to a file; never paste strings from a tool result into the
+command line). Finish with
 Observations, Inferences, Unknowns, and Next steps. When the user asked to
 build, follow the skill's reconstruction notes to separate observed behavior
 from design choices before writing code.

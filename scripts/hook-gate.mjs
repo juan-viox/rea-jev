@@ -6,15 +6,19 @@
  * Order of evaluation; the first rule that fires decides:
  *   1. not an REA tool / mode off            → silent
  *   2. redundancy (local): identical inspect call already answered → deny
- *   3. hard rules (local): out-of-scope executable, credential in the scenario
- *      environment → ask; non-loopback CDP/inspector endpoint → deny
+ *   3. hard rules (local): a non-loopback CDP/inspector endpoint on any REA
+ *      tool → deny; for runtime-class tools an out-of-scope executable or a
+ *      credential in the scenario environment → ask
  *   4. Jev gate, only for runtime-class tools and for extract/export/import
- *      with paths outside cwd: within_scope / irreversible / runtime_requested
+ *      with paths outside cwd: within_scope / irreversible / runtime_requested.
+ *      A `deny` (enforce) needs the deciding answer at or above the `confirm`
+ *      band; below it the decision degrades to `ask`.
  *   5. everything else → silent (normal permission flow)
  *
  * Decisions go to stdout as `hookSpecificOutput.permissionDecision`; the hook
  * always exits 0. Shadow mode logs the would-be decision and stays silent.
- * A `pre` ledger event is appended for every REA call (except in mode off).
+ * A `pre` ledger event is appended for every REA call (except in mode off),
+ * also when the safety timer pre-empts a Jev call.
  *
  * @module hook-gate
  */
@@ -22,7 +26,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { readStdinJson, emitAndExit, exitSilently, mode, threshold, debug } from './lib/hookio.mjs';
-import { askJev, noul, resolveTimeoutMs } from './lib/jev.mjs';
+import { askJev, noul, resolveTimeoutMs, isDecisive } from './lib/jev.mjs';
 import { excerpt, hasSecret } from './lib/redact.mjs';
 import { readEvents, summarize, appendEvent, logDecision } from './lib/ledger.mjs';
 import { isReaTool, bareToolName, effectClass, hashInput, canonicalJson } from './lib/rea.mjs';
@@ -30,6 +34,10 @@ import { isLoopback } from './lib/sniff.mjs';
 
 /** Hard ceiling for the whole hook, under the 10 s hooks.json timeout. */
 const SAFETY_MS = 9000;
+/** Jev gets at most this much of the budget, so it always returns before the safety timer. */
+const JEV_MAX_MS = SAFETY_MS - 3500;
+/** `user_request` characters sent to Jev. */
+const USER_REQUEST_MAX = 600;
 /** Tools whose file-moving inputs trigger the Jev gate when they leave cwd. */
 const PATH_GATED_TOOLS = new Set(['extract_artifact', 'export_evidence_bundle', 'import_evidence_bundle']);
 const ENDPOINT_KEYS = new Set(['cdp_endpoint', 'inspector_endpoint']);
@@ -53,7 +61,12 @@ function gateQuestions() {
 }
 
 async function main() {
-  const safety = setTimeout(() => exitSilently(0), SAFETY_MS);
+  /** Set once the pre event can be written; flushed by the safety timer if Jev never returns. */
+  let pending = null;
+  const safety = setTimeout(() => {
+    if (pending) appendEvent(pending.sessionId, { ...pending.event, decision: 'silent', source: 'jev', reason: 'timeout' });
+    exitSilently(0);
+  }, SAFETY_MS);
   safety.unref?.();
 
   const input = await readStdinJson();
@@ -74,6 +87,7 @@ async function main() {
 
   /** Record the pre event, log, and emit (unless shadow). Never returns. */
   const finish = (decision, source, reason, extra = {}) => {
+    pending = null;
     appendEvent(sessionId, { kind: 'pre', tool, input_hash: hash, input_excerpt: inputExcerpt, decision, source, ...(extra.answers && { answers: extra.answers }) });
     logDecision({
       hook: 'pre',
@@ -132,14 +146,17 @@ async function main() {
   const needsJev = effect === 'runtime' || outsidePaths.length > 0;
   if (!needsJev) return finish('silent', 'local');
 
-  const userRequest = typeof summary.lastRoute?.prompt_excerpt === 'string' ? summary.lastRoute.prompt_excerpt : '';
+  // The request comes from the last reverse-engineering route (never a follow-up
+  // such as "format that as a table"); every field is redacted before it leaves.
+  const userRequest = excerpt(summary.userRequest, USER_REQUEST_MAX);
   const state = {
     user_request: userRequest,
-    declared_target: summary.declaredTarget,
+    declared_target: summary.declaredTarget ? excerpt(summary.declaredTarget, 300) : null,
     tool,
     tool_input: excerpt(canonicalJson(toolInput), 1500),
   };
-  const result = await askJev({ state, questions: gateQuestions(), timeoutMs: resolveTimeoutMs() });
+  pending = { sessionId, event: { kind: 'pre', tool, input_hash: hash, input_excerpt: inputExcerpt } };
+  const result = await askJev({ state, questions: gateQuestions(), timeoutMs: Math.min(resolveTimeoutMs(), JEV_MAX_MS) });
   if (!result.ok) {
     debug(`gate: jev ${result.reason}; silent`);
     return finish('silent', 'jev', result.reason, { latencyMs: result.latencyMs });
@@ -156,7 +173,9 @@ async function main() {
   const hasRequest = userRequest.length > 0;
 
   if (hasRequest && pScope !== null && pScope < tScope) {
-    const decision = m === 'enforce' ? 'deny' : 'ask';
+    // A hard deny needs a decisive answer (confidence ≥ confirm band); a
+    // near-coin-flip within_scope only asks, even in enforce.
+    const decision = m === 'enforce' && isDecisive(a.within_scope) ? 'deny' : 'ask';
     return finish(decision, 'jev', `rea-jev: \`${tool}\` does not appear to act on the declared target (within_scope ${pScope.toFixed(2)}); ${decision === 'deny' ? 'keep runtime and extraction inside the artifact under investigation' : 'confirm it belongs to the investigation'}.`, extra);
   }
   if (pIrrev !== null && pIrrev > tIrrev) {

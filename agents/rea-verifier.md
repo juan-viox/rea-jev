@@ -29,12 +29,16 @@ it, and what would have to be true for it to be wrong.
    `list_unknowns` for open gaps that touch the claim. Write the text to one
    temporary file in the system temp directory, at most about 20k characters,
    most relevant first.
-3. **Ask System 1.** Run
-   `node "${CLAUDE_PLUGIN_ROOT}/scripts/jev.mjs" verify --claim "<claim>" --evidence <file>`.
+3. **Ask System 1.** Write the claim to a second temporary file (claims quote
+   strings from the artifact; nothing from a tool result goes on a command
+   line) and run
+   `node "${CLAUDE_PLUGIN_ROOT}/scripts/jev.mjs" verify --claim-file <claim-file> --evidence <file>`.
    It returns four probabilities (`supported`, `contradicted`, `needs_runtime`,
-   `overstated`) and a verdict. The verdict is a prior, not the answer; a
-   `supported` verdict still gets step 4. If the command exits 2 (no key,
-   timeout, provider error), say so and continue without it.
+   `overstated`) and a verdict with the deciding probability, confidence and
+   band. The verdict is a prior, not the answer; a `supported` verdict still
+   gets step 4, and a `supported` in the confirm band is a hypothesis, not an
+   inference. If the command exits 2 (no key, timeout, provider error), say so
+   and continue without it.
 4. **Try to refute.** Spend at most five read-only REA calls looking for the
    observation that would contradict the claim if it were false:
    - a caller or reference the claim did not account for (`procedure_callers`,

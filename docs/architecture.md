@@ -95,25 +95,31 @@ both a globally registered REA (`rea setup`) and the plugin's bundled server.
    A successful `post` with the same hash in this session, with no
    mutation-class call since, and a tool that is not status-class, is denied
    with the Evidence IDs the earlier call returned.
-3. Hard rules, local and free, for runtime-class tools: an executable outside
-   `cwd` and the declared target asks; credentials in a scenario environment
-   ask; a non-loopback CDP or inspector endpoint is denied.
+3. Hard rules, local and free: a non-loopback CDP or inspector endpoint on any
+   REA tool is denied; for runtime-class tools an executable outside `cwd` and
+   the declared target asks, and credentials in a scenario environment ask.
 4. Jev, only for runtime-class tools and for export/import/extract with paths
-   outside `cwd`: `within_scope`, `irreversible`, `runtime_requested`.
+   outside `cwd`: `within_scope`, `irreversible`, `runtime_requested`, judged
+   against the last reverse-engineering request (never a follow-up prompt). An
+   enforce `deny` needs a decisive answer (confidence at or above 0.45);
+   otherwise it asks.
 5. Everything else is silent and goes through Claude Code's normal permission
    flow. Inspection calls never cost a Jev request.
 
 ### PostToolUse (evidence)
 
-1. `parseReaResult` extracts text, JSON, Evidence IDs (`ev_` plus 64 hex),
-   limitations, unknowns, truncation, and errors. The ledger gets a `post`
-   record: hashes, IDs, limitations (at most 120 chars each), byte count.
+1. `parseReaResult` extracts text, JSON, Evidence IDs (`ev_` plus 64 hex, at
+   most 64 kept), limitations from REA's envelope positions only, unknowns,
+   truncation, and errors. The ledger gets a `post` record: hashes, IDs,
+   limitations (at most 120 chars each), byte count. An empty response is a
+   failed call; a response over 32 MB is recorded from its salvaged prefix.
 2. Skip Jev when the mode is `off`, the tool is status- or mutation-class
    (except `open_binary`, scanned locally for limitations), the result is under
    400 chars, or the result is an error.
-3. Otherwise one call with `relevance`, `unrecorded_unknown`,
-   `agent_directed_text`, `claims_runtime`. A note is injected only when
-   actionable; shadow mode logs only.
+3. Otherwise one call with `relevance` (when the session has a request),
+   `unrecorded_unknown`, `agent_directed_text`, and `claims_runtime` (static
+   tools only; passive live-process observation is not static). A note is
+   injected only when actionable; shadow mode logs only.
 
 ### Stop (completeness)
 
@@ -123,29 +129,40 @@ both a globally registered REA (`rea setup`) and the plugin's bundled server.
 4. Local facts: open native session, Evidence IDs seen and cited, limitations
    flagged, unknowns recorded, tool calls.
 5. One call with `claims_complete`, `separates_epistemics`, `cites_evidence`,
-   `unaddressed_question`, `outcome`. `enforce` may block with a reason that
-   lists only the triggered items; `advise` and `shadow` show the would-have
+   `unaddressed_question`, `outcome` over the last reverse-engineering request
+   and the final message (the facts stay local). `enforce` may block with a
+   reason that lists only the triggered, decisive items; the citation item
+   needs the regex count of cited IDs to be zero; `advise` and `shadow`, and an
+   `enforce` whose `claims_complete` is a near-coin-flip, show the would-have
    verdict as a `systemMessage`.
 
 ## The ledger
 
 `$REA_JEV_HOME/sessions/<session_id>.jsonl` (default `~/.rea-jev`, or
 `$CLAUDE_PLUGIN_DATA`). Records are `route`, `pre`, `post`, and `stop` events
-holding timestamps, tool names, input hashes, decisions, Evidence IDs,
-limitations, and excerpts of at most 200 redacted characters. Full tool inputs
+holding timestamps, tool names, input hashes, decisions, Evidence IDs (at most
+64 per result), limitations, excerpts of at most 200 redacted characters, and,
+on route events, a 1200-character redacted copy of the user's prompt
+(`prompt_for_jev`) that the later hooks send as the request. Full tool inputs
 and outputs are never written. `summarize(events)` derives what the hooks need:
-REA activity, open sessions, the last route, the redundancy window since the
-last mutation, Evidence IDs, flagged limitations, recorded unknowns, and stop
-block history. With `REA_JEV_LOG=1`, every Jev decision is also appended to
+REA activity, open sessions, the last route and the last reverse-engineering
+route (`userRequest`), the redundancy window since the last mutation (empty
+results are never reusable), Evidence IDs, flagged limitations, recorded
+unknowns, and stop block history. A file over the 8 MB read cap is read from
+the tail but keeps its latest route event. With `REA_JEV_LOG=1`, every Jev decision is also appended to
 `$REA_JEV_HOME/decisions.jsonl` for `jev stats` and threshold tuning.
 
 ## Jev client
 
 Both providers take the same body `{ model, state, questions }` and return
 `{ model, answers, usage }`. The client adds `Authorization: Bearer`, retries
-once on 429 or 529 inside the timeout budget (default 4000 ms, `AbortController`),
-and returns a result object instead of throwing on expected failures:
-`no_key`, `timeout`, `http_4xx`, `http_5xx`, `bad_json`, `network`.
+once on 429 or 529 inside the timeout budget (default 4000 ms, `AbortController`;
+the retry timer is referenced so a hook process stays alive for it), validates
+every answer against the question it answers (out-of-range or foreign values are
+dropped; all invalid is `bad_json`), and returns a result object instead of
+throwing on expected failures: `no_key`, `timeout`, `http_4xx`, `http_5xx`,
+`bad_json`, `network`. `isDecisive(answer)` is the confidence check the hooks
+apply before any `deny` or `block`.
 
 Confidence (TypeSafe's formulas): Noul `|2p - 1|`; Choice
 `(p_max - 1/n) / (1 - 1/n)`; Score `max(0, 1 - sum(p_i · |i - m|) / MAD_uniform)`.
@@ -156,8 +173,10 @@ kept under roughly 24k estimated tokens (chars / 4).
 ## Egress and redaction
 
 Only the named state fields of each question leave the machine, truncated and
-redacted (`sk-…`, `ghp_…`, `AKIA…`, JWTs, bearer tokens, `password=`, `token=`,
-private key blocks, URL userinfo). The analyzed artifact is never uploaded; REA
+redacted (`sk-…`, `sk_live_…`, `ghp_…`, `glpat-…`, `AKIA…`, `AIza…`, `xox?-…`,
+JWTs, bearer tokens, `password=`, `token=`, `cookie=`, private key blocks, URL
+userinfo; URLs in prompts also lose their query strings). Every pattern is
+linear in the input. The analyzed artifact is never uploaded; REA
 analyzes locally. Nothing is logged verbatim beyond short excerpts.
 
 ## Modes

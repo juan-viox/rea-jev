@@ -46,7 +46,7 @@ than repeating it.
          analysisOperation: t.analysisOperation, description: t.description,
          annotations: t.annotations, effects: t.effects,
          required: t.inputSchema?.required ?? [],
-         props: Object.fromEntries(Object.entries(t.inputSchema?.properties ?? {}).map(([k, v]) => [k, { type: v.type, description: v.description }])),
+         props: Object.fromEntries(Object.entries(t.inputSchema?.properties ?? {}).map(([k, v]) => [k, { type: v.type, description: v.description, ...(v.enum && { enum: v.enum }) }])),
        })),
      };
      writeFileSync("rea-tool-catalog.json", JSON.stringify(out, null, 2) + "\n");
@@ -55,7 +55,10 @@ than repeating it.
    ```
 
    Keep the shape above; `validate.mjs`, the hooks' effect classes, and the
-   generated Markdown read exactly these fields.
+   generated Markdown read exactly these fields. The `enum` on a property
+   (`format`, `integrity_policy`, `direction`, `severity`, `status`, …) is what
+   `references/route-table.md` cites as the optional values; after a bump,
+   check those lists against the regenerated enums.
 3. Update the pin in `.mcp.json` to `rea-agents@<VERSION>`.
 4. Regenerate the skill's catalog page:
    `node scripts/validate.mjs --write-catalog`.

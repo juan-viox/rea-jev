@@ -9,8 +9,14 @@
  *    previous block → otherwise exit 0.
  * 4. Final message from `last_assistant_message`, else the last assistant text
  *    in `transcript_path` (JSONL). Unreadable → exit 0.
- * 5. Local facts from the ledger; one Jev call with five questions.
+ * 5. Local facts from the ledger; one Jev call with five questions over the
+ *    request and the final message (the facts stay local: the Evidence-ID
+ *    count is a regex, not a judgment).
  * 6. enforce → `{"decision":"block","reason"}`; advise/shadow → `systemMessage`.
+ *    A block needs `claims_complete` at or above the `confirm` band and lists
+ *    only decisive Jev items (plus the local open-session fact); when
+ *    `claims_complete` is a near-coin-flip the verdict degrades to a
+ *    `systemMessage` even in enforce.
  *
  * Fails open: any error, timeout, or Jev failure → exit 0, empty stdout.
  *
@@ -19,13 +25,15 @@
 
 import fs from 'node:fs';
 import { readStdinJson, emitAndExit, exitSilently, mode, threshold, debug } from './lib/hookio.mjs';
-import { askJev, confidenceOf, noul, choice, resolveTimeoutMs } from './lib/jev.mjs';
+import { askJev, confidenceOf, noul, choice, resolveTimeoutMs, isDecisive } from './lib/jev.mjs';
 import { excerpt } from './lib/redact.mjs';
 import { readEvents, summarize, appendEvent, logDecision } from './lib/ledger.mjs';
 import { EVIDENCE_ID_RE } from './lib/rea.mjs';
 
 /** Hard ceiling for the whole hook, under the 25 s hooks.json timeout. */
 const SAFETY_MS = 24000;
+/** Jev gets at most this much of the budget, so it always returns before the safety timer. */
+const JEV_MAX_MS = SAFETY_MS - 3500;
 const MAX_BLOCKS_PER_SESSION = 2;
 const BLOCK_COOLDOWN_MS = 60_000;
 const USER_REQUEST_MAX = 1200;
@@ -42,7 +50,7 @@ function stopQuestions() {
   return {
     claims_complete: noul("Does `final_message` present the investigation as finished or the user's question as answered?"),
     separates_epistemics: noul('Does `final_message` distinguish what was directly observed from what was inferred and from what remains unknown?'),
-    cites_evidence: noul('Does `final_message` tie its main conclusions to specific Evidence IDs, addresses, file paths, function names, or named tool results?'),
+    cites_evidence: noul('Does `final_message` tie each main conclusion to the Evidence IDs or tool results it rests on?'),
     unaddressed_question: noul('Does `user_request` contain a question or deliverable that `final_message` neither answers nor explicitly marks as unresolved?'),
     outcome: choice('What does `final_message` report as the state of the work?', {
       complete: 'Finished with conclusions',
@@ -94,12 +102,13 @@ async function main() {
     unknowns_recorded: summary.unknownsRecorded,
     tool_calls: summary.toolCalls,
   };
+  // `user_request` is the last reverse-engineering request (never a follow-up
+  // prompt); the facts stay local, every question references only these two fields.
   const state = {
-    user_request: excerpt(summary.lastRoute?.prompt_excerpt ?? '', USER_REQUEST_MAX),
+    user_request: excerpt(summary.userRequest, USER_REQUEST_MAX),
     final_message: excerpt(finalMessage, FINAL_MESSAGE_MAX),
-    facts,
   };
-  const result = await askJev({ state, questions: stopQuestions(), timeoutMs: resolveTimeoutMs() });
+  const result = await askJev({ state, questions: stopQuestions(), timeoutMs: Math.min(resolveTimeoutMs(), JEV_MAX_MS) });
   if (!result.ok) {
     debug(`stop: jev ${result.reason}; exit`);
     logDecision({ hook: 'stop', session_id: sessionId, decision: 'allow', source: 'jev', reason: result.reason, latency_ms: result.latencyMs });
@@ -107,7 +116,7 @@ async function main() {
   }
 
   const verdict = decideStop(result.answers, facts);
-  const decision = !verdict.block ? 'allow' : m === 'enforce' ? 'block' : 'shadow_block';
+  const decision = !verdict.block ? 'allow' : m === 'enforce' && verdict.decisive ? 'block' : 'shadow_block';
   appendEvent(sessionId, { kind: 'stop', decision, answers: result.answers, reason: verdict.reason ? excerpt(verdict.reason, 400) : null, facts });
   logDecision({
     hook: 'stop',
@@ -122,16 +131,24 @@ async function main() {
   debug(`stop: ${decision} in ${result.latencyMs} ms`);
 
   if (!verdict.block) return exitSilently(0);
-  if (m === 'enforce') return emitAndExit({ decision: 'block', reason: verdict.reason });
+  if (decision === 'block') return emitAndExit({ decision: 'block', reason: verdict.reason });
   return emitAndExit({ systemMessage: `rea-jev would have asked for: ${verdict.reason}` });
 }
 
 /**
  * Apply the §5.4 policy.
  *
+ * Deterministic facts come first: the Evidence-ID citation item fires only when
+ * IDs were returned and the final message cites none (regex count); the Noul
+ * `cites_evidence` then confirms that the conclusions are not tied to tool
+ * results in some other way. Jev items whose answer is in the escalate band
+ * are dropped (low confidence → silent); `decisive` is false when
+ * `claims_complete` itself is in that band, which downgrades a block to a
+ * `systemMessage`.
+ *
  * @param {Record<string, any>} answers
- * @param {{open_session_not_closed: boolean, evidence_ids_seen: number}} facts
- * @returns {{block: boolean, reason: string|null, confidences: Record<string, number>}}
+ * @param {{open_session_not_closed: boolean, evidence_ids_seen: number, evidence_ids_cited: number}} facts
+ * @returns {{block: boolean, decisive: boolean, reason: string|null, confidences: Record<string, number>}}
  */
 function decideStop(answers, facts) {
   const a = answers ?? {};
@@ -152,20 +169,22 @@ function decideStop(answers, facts) {
   const tCites = threshold('STOP_CITES', 0.3);
   const tUnaddressed = threshold('STOP_UNADDRESSED', 0.7);
 
-  if (outcome === 'blocked' || outcome === 'not_an_investigation') return { block: false, reason: null, confidences };
-  if (pDone === null || pDone < tDone) return { block: false, reason: null, confidences };
+  const none = { block: false, decisive: false, reason: null, confidences };
+  if (outcome === 'blocked' || outcome === 'not_an_investigation') return none;
+  if (pDone === null || pDone < tDone) return none;
 
   const problems = [];
   const asks = [];
-  if (pCites !== null && pCites <= tCites && facts.evidence_ids_seen > 0) {
+  const citedNone = facts.evidence_ids_seen > 0 && facts.evidence_ids_cited === 0;
+  if (citedNone && pCites !== null && pCites <= tCites && isDecisive(a.cites_evidence)) {
     problems.push(`conclusions do not cite Evidence IDs although ${facts.evidence_ids_seen} ${facts.evidence_ids_seen === 1 ? 'was' : 'were'} returned`);
     asks.push('Cite the Evidence IDs behind each conclusion');
   }
-  if (pEpist !== null && pEpist <= tEpist) {
+  if (pEpist !== null && pEpist <= tEpist && isDecisive(a.separates_epistemics)) {
     problems.push('observations, inferences, and unknowns are not told apart');
     asks.push('state what is inferred vs observed vs unknown');
   }
-  if (pUnaddressed !== null && pUnaddressed >= tUnaddressed) {
+  if (pUnaddressed !== null && pUnaddressed >= tUnaddressed && isDecisive(a.unaddressed_question)) {
     problems.push('part of the request is neither answered nor marked unresolved');
     asks.push('answer each part of the request or mark it as an open question');
   }
@@ -173,12 +192,12 @@ function decideStop(answers, facts) {
     problems.push('the native session is still open');
     asks.push('call close_binary');
   }
-  if (problems.length === 0) return { block: false, reason: null, confidences };
+  if (problems.length === 0) return none;
 
   const reason =
     `rea-jev: the investigation reports completion (${pDone.toFixed(2)}) but: ${problems.join('; ')}. ` +
     `${joinAsks(asks)}. If something cannot be established, say so plainly instead of presenting it as done.`;
-  return { block: true, reason, confidences };
+  return { block: true, decisive: isDecisive(a.claims_complete), reason, confidences };
 }
 
 /**

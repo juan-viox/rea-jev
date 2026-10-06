@@ -42,6 +42,8 @@ const MAX_BODY = 16 * 1024 * 1024;
  * @property {number} port
  * @property {Array<{method: string, url: string, headers: Record<string, string|string[]|undefined>, body: any, at: number}>} requests
  * @property {Record<string, unknown>} script  live-editable per-question overrides
+ * @property {number} inflight      requests currently being handled
+ * @property {number} maxInflight   highest `inflight` seen
  * @property {() => Promise<void>} close
  * @property {import('node:http').Server} server
  */
@@ -51,8 +53,13 @@ const MAX_BODY = 16 * 1024 * 1024;
  *
  * `script[key]` may be: a number (noul probability; choice option index;
  * score level), a string (choice option), a partial answer object
- * (`{noul}`, `{choice}`, `{probabilities}`), or a function
- * `(question, state, body, key) => any of the above`.
+ * (`{noul}`, `{choice}`, `{probabilities}`), `{raw: <answer>}` to return an
+ * answer verbatim (for malformed-answer tests), or a function
+ * `(question, state, body, key) => any of the above`. A scripted Choice option
+ * that is not one of the question's criteria is a test bug: the fake answers
+ * 500 instead of silently picking the first option.
+ *
+ * `fake.inflight` / `fake.maxInflight` track concurrent requests.
  *
  * @param {{script?: Record<string, unknown>, port?: number, host?: string, scenario?: string|null, latencyMs?: number, model?: string}} [opts]
  * @returns {Promise<FakeJev>}
@@ -61,7 +68,13 @@ export async function startFakeJev(opts = {}) {
   const { script = {}, port = 0, host = '127.0.0.1', scenario = null, latencyMs = 0, model = FAKE_MODEL } = opts;
   const requests = [];
   const counters = new Map();
+  const fakeRef = { inflight: 0, maxInflight: 0 };
   const server = http.createServer((req, res) => {
+    fakeRef.inflight += 1;
+    fakeRef.maxInflight = Math.max(fakeRef.maxInflight, fakeRef.inflight);
+    res.on('close', () => {
+      fakeRef.inflight -= 1;
+    });
     handle(req, res, { script, requests, counters, scenario, latencyMs, model }).catch((err) => {
       try {
         res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -83,6 +96,12 @@ export async function startFakeJev(opts = {}) {
     requests,
     script,
     server,
+    get inflight() {
+      return fakeRef.inflight;
+    },
+    get maxInflight() {
+      return fakeRef.maxInflight;
+    },
     close: () =>
       new Promise((resolve) => {
         server.closeAllConnections?.();
@@ -205,6 +224,7 @@ export function buildResponse(body, script = {}, model = FAKE_MODEL, bodyChars =
  */
 export function buildAnswer(q, spec) {
   const type = q?.type;
+  if (spec && typeof spec === 'object' && 'raw' in spec) return spec.raw;
   if (type === 'noul') return { type: 'noul', noul: noulValue(spec) };
   if (type === 'choice') return choiceAnswer(Object.keys(q.criteria ?? {}), spec);
   if (type === 'score') return scoreAnswer(Array.isArray(q.criteria) ? q.criteria : [], spec);
@@ -226,9 +246,10 @@ function choiceAnswer(options, spec) {
     normalize(probs);
   } else {
     let pick;
-    if (typeof spec === 'string') pick = options.includes(spec) ? spec : options[0];
+    const named = typeof spec === 'string' ? spec : spec && typeof spec === 'object' && typeof spec.choice === 'string' ? spec.choice : null;
+    if (named !== null && !options.includes(named)) throw new Error(`scripted option "${named}" is not one of the question's criteria (${options.join(', ')})`);
+    if (named !== null) pick = named;
     else if (typeof spec === 'number') pick = options[Math.min(options.length - 1, Math.max(0, Math.round(spec)))];
-    else if (spec && typeof spec === 'object' && typeof spec.choice === 'string') pick = options.includes(spec.choice) ? spec.choice : options[0];
     const top = pick ? 0.9 : 0.7;
     pick = pick ?? options[0];
     probs = spread(options, pick, options.length === 1 ? 1 : top);

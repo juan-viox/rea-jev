@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { startFakeJev } from './fake-jev.mjs';
-import { parseItems, normalizeItems, RANK_CHUNK, CLASSIFY_BATCH } from '../scripts/jev.mjs';
+import { parseItems, normalizeItems, balancedChunks, verdictOf, RANK_CHUNK, CLASSIFY_BATCH, MAX_CONCURRENCY } from '../scripts/jev.mjs';
 
 const CLI = fileURLToPath(new URL('../scripts/jev.mjs', import.meta.url));
 
@@ -127,10 +127,43 @@ describe('ask', () => {
     assert.equal(r.code, 2);
     assert.equal(parse(r).reason, 'no_key');
   });
+  test('429 then 200 → the retry really happens in a child process (exit 0, two requests seen)', async () => {
+    const s = await startFakeJev({ scenario: '429-then-200' });
+    try {
+      const r = await run(['ask', '--json', '--state', '{"a":1}', '--questions', '{"q":{"type":"noul","instructions":"Is it?"}}'], { env: withKey({ JEV_BASE_URL: s.url }) });
+      assert.equal(r.code, 0, `exit ${r.code}: ${r.stderr}`);
+      assert.equal(parse(r).ok, true);
+      assert.equal(s.requests.length, 2, 'one retry after the 429');
+    } finally {
+      await s.close();
+    }
+  });
+  test('permanent 429 → exit 2 with http_4xx after two attempts, not a silent exit 0', async () => {
+    const s = await startFakeJev({ scenario: '429' });
+    try {
+      const r = await run(['ask', '--json', '--state', '{"a":1}', '--questions', '{"q":{"type":"noul","instructions":"Is it?"}}'], { env: withKey({ JEV_BASE_URL: s.url }) });
+      assert.equal(r.code, 2);
+      const j = parse(r);
+      assert.equal(j.reason, 'http_4xx');
+      assert.equal(j.status, 429);
+      assert.equal(j.attempts, 2);
+      assert.match(r.stderr, /429/);
+    } finally {
+      await s.close();
+    }
+  });
+  test('a numeric credential value is redacted structurally and the state stays an object', async () => {
+    const before = fake.requests.length;
+    const r = await run(['ask', '--json', '--state', '{"token": 12345, "nested": {"api_key": 7, "PWD": "/home/u"}, "x": 1}', '--questions', '{"q":{"type":"noul","instructions":"Is it?"}}']);
+    assert.equal(r.code, 0, r.stderr);
+    const sent = fake.requests[before].body.state;
+    assert.equal(typeof sent, 'object');
+    assert.deepEqual(sent, { token: '[REDACTED:kv]', nested: { api_key: '[REDACTED:kv]', PWD: '/home/u' }, x: 1 });
+  });
 });
 
 describe('rank', () => {
-  test('450 JSON-lines items → 3 requests of ≤200, one Choice + match_exists each, merged by probability', async () => {
+  test('450 JSON-lines items → 3 balanced requests of ≤200, one Choice + match_exists each, merged by probability', async () => {
     const lines = Array.from({ length: 450 }, (_, i) => JSON.stringify({ id: `item-${i}`, text: `string number ${i} from the binary` }));
     const file = writeTmp('items450.jsonl', lines.join('\n') + '\n');
     fake.script.best = (q) => ('item-437' in q.criteria ? 'item-437' : 'item-3' in q.criteria ? 'item-3' : undefined);
@@ -141,7 +174,7 @@ describe('rank', () => {
     const reqs = fake.requests.slice(before);
     assert.equal(reqs.length, 3);
     const sizes = reqs.map((x) => Object.keys(x.body.questions.best.criteria).length).sort((a, b) => a - b);
-    assert.deepEqual(sizes, [50, 200, 200]);
+    assert.deepEqual(sizes, [150, 150, 150], 'balanced chunks: a small last chunk would inflate its p_in_chunk');
     for (const x of reqs) {
       assert.deepEqual(Object.keys(x.body.questions).sort(), ['best', 'match_exists']);
       assert.equal(x.body.questions.best.type, 'choice');
@@ -201,6 +234,49 @@ describe('rank', () => {
     assert.equal(parse(bad).ok, false);
     assert.equal(parse(bad).command, 'rank');
   });
+  test('chunks are sent at most MAX_CONCURRENCY at a time', async () => {
+    const slow = await startFakeJev({ latencyMs: 60 });
+    try {
+      const lines = Array.from({ length: 2000 }, (_, i) => `candidate string ${i}`);
+      const file = writeTmp('items2000.txt', lines.join('\n'));
+      const r = await run(['rank', 'q', '--items', file, '--json'], { env: withKey({ JEV_BASE_URL: slow.url }) });
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(parse(r).requests, 10);
+      assert.equal(slow.requests.length, 10);
+      assert.ok(slow.maxInflight <= MAX_CONCURRENCY, `max in flight ${slow.maxInflight}`);
+      assert.ok(slow.maxInflight >= 2, 'requests do run concurrently');
+    } finally {
+      await slow.close();
+    }
+  });
+  test('one failed chunk degrades to a partial answer (exit 0, partial:true) instead of failing the command', async () => {
+    const lines = Array.from({ length: 300 }, (_, i) => JSON.stringify({ id: `item-${i}`, text: `string ${i}` }));
+    const file = writeTmp('partial.jsonl', lines.join('\n'));
+    fake.script.best = (q) => {
+      if ('item-5' in q.criteria) throw new Error('boom');
+      return 'item-299' in q.criteria ? 'item-299' : undefined;
+    };
+    const r = await run(['rank', 'q', '--items', file, '--json']);
+    assert.equal(r.code, 0, r.stderr);
+    const j = parse(r);
+    assert.equal(j.partial, true);
+    assert.equal(j.failed_chunks, 1);
+    assert.equal(j.unranked_items, 150);
+    assert.equal(j.items[0].id, 'item-299');
+    assert.ok(j.items.every((it) => Number(it.id.slice(5)) >= 150), 'items from the failed chunk are not ranked');
+    const human = await run(['rank', 'q', '--items', file]);
+    assert.match(human.stdout, /PARTIAL: 1 of 2 requests failed/);
+    delete fake.script.best;
+  });
+  test('balancedChunks (in-process) keeps sizes within one of each other and under the budget', () => {
+    const items = Array.from({ length: 450 }, (_, i) => ({ id: `i${i}`, text: 'x'.repeat(380) }));
+    const chunks = balancedChunks(items, 200, 300, 2);
+    const sizes = chunks.map((c) => c.length);
+    assert.ok(chunks.length >= 4, `token budget forces ≥ 4 chunks, got ${chunks.length}`);
+    assert.ok(Math.max(...sizes) - Math.min(...sizes) <= 1, `unbalanced: ${sizes}`);
+    assert.equal(sizes.reduce((a, b) => a + b, 0), 450);
+    assert.deepEqual(balancedChunks(items.slice(0, 10), 200, 300, 2).map((c) => c.length), [10]);
+  });
 });
 
 describe('classify', () => {
@@ -222,15 +298,17 @@ describe('classify', () => {
         assert.equal(q.type, 'choice');
         assert.deepEqual(Object.keys(q.criteria), ['parser', 'network', 'storage', 'ui', 'crypto', 'other']);
         assert.equal(q.criteria.storage, 'Persists data');
-        assert.ok(q.instructions.includes(`items.${k}`));
+        assert.ok(q.instructions.startsWith('What role does this procedure play?'), 'the judgment lives in the question, not in the state');
+        assert.ok(q.instructions.includes(`\`items.${k}\``));
         assert.ok(k in x.body.state.items);
       }
-      assert.equal(x.body.state.instructions, 'What role does this procedure play?');
+      assert.deepEqual(Object.keys(x.body.state), ['items'], 'state holds only the content');
       assert.ok(Object.keys(x.body.questions).length <= CLASSIFY_BATCH);
     }
     const j = parse(r);
     assert.equal(j.items.length, 95);
     assert.equal(j.batches, 3);
+    assert.equal(j.added_label, undefined, 'an explicit other label is kept as is');
     assert.equal(j.items[7].label, 'network');
     assert.equal(j.items[7].id, '8');
     assert.equal(j.items[94].label, 'crypto');
@@ -240,6 +318,20 @@ describe('classify', () => {
     assert.equal(j.counts.parser, 93);
     delete fake.script.item_7;
     delete fake.script.item_94;
+  });
+  test('a label set without other/none gets `other` appended and says so', async () => {
+    const file = writeTmp('two-labels.txt', 'a\nb');
+    const before = fake.requests.length;
+    const r = await run(['classify', '--items', file, '--labels', 'parser,network', '--instructions', 'Which role?', '--json']);
+    assert.equal(r.code, 0, r.stderr);
+    const j = parse(r);
+    assert.deepEqual(j.labels, ['parser', 'network', 'other']);
+    assert.equal(j.added_label, 'other');
+    assert.deepEqual(Object.keys(fake.requests[before].body.questions.item_0.criteria), ['parser', 'network', 'other']);
+    const human = await run(['classify', '--items', file, '--labels', 'parser,network', '--instructions', 'Which role?']);
+    assert.match(human.stdout, /note: added label "other"/);
+    const none = await run(['classify', '--items', file, '--labels', 'parser,none', '--instructions', 'Which role?', '--json']);
+    assert.deepEqual(parse(none).labels, ['parser', 'none']);
   });
   test('missing --labels / --instructions / fewer than two labels → exit 1', async () => {
     const file = writeTmp('two.txt', 'a\nb');
@@ -255,12 +347,15 @@ describe('verify', () => {
     return () => writeTmp('evidence.txt', 'search_strings found "LicenseCheckFailed" at 0x100045a0; xrefs from sub_10000f3a0.');
   }
   const cases = [
-    { name: 'supported', script: { supported: 0.9, contradicted: 0.05, needs_runtime: 0.1, overstated: 0.1 }, verdict: 'supported' },
-    { name: 'contradicted wins', script: { supported: 0.6, contradicted: 0.8, needs_runtime: 0.1, overstated: 0.1 }, verdict: 'contradicted' },
-    { name: 'needs runtime when not supported', script: { supported: 0.2, contradicted: 0.1, needs_runtime: 0.9, overstated: 0.2 }, verdict: 'needs_runtime' },
+    { name: 'supported', script: { supported: 0.9, contradicted: 0.05, needs_runtime: 0.1, overstated: 0.1 }, verdict: 'supported', band: 'act' },
+    { name: 'contradicted wins', script: { supported: 0.6, contradicted: 0.8, needs_runtime: 0.1, overstated: 0.1 }, verdict: 'contradicted', band: 'confirm' },
+    { name: 'needs runtime when not supported', script: { supported: 0.2, contradicted: 0.1, needs_runtime: 0.9, overstated: 0.2 }, verdict: 'needs_runtime', band: 'act' },
     { name: 'weakly supported → insufficient', script: { supported: 0.3, contradicted: 0.1, needs_runtime: 0.1, overstated: 0.2 }, verdict: 'insufficient' },
     { name: 'supported but overstated → insufficient', script: { supported: 0.9, contradicted: 0.1, needs_runtime: 0.1, overstated: 0.8 }, verdict: 'insufficient' },
     { name: 'supported and runtime-flagged → supported (static evidence suffices)', script: { supported: 0.9, contradicted: 0.1, needs_runtime: 0.9, overstated: 0.1 }, verdict: 'supported' },
+    { name: 'contradicted at p 0.60 is a coin flip → insufficient, never categorical', script: { supported: 0.65, contradicted: 0.6, needs_runtime: 0.1, overstated: 0.1 }, verdict: 'insufficient' },
+    { name: 'supported at p 0.72 (confidence 0.44, escalate) → insufficient', script: { supported: 0.72, contradicted: 0.1, needs_runtime: 0.1, overstated: 0.1 }, verdict: 'insufficient' },
+    { name: 'supported at p 0.75 (confidence 0.50, confirm) → supported in the confirm band', script: { supported: 0.75, contradicted: 0.1, needs_runtime: 0.1, overstated: 0.1 }, verdict: 'supported', band: 'confirm' },
   ];
   for (const c of cases) {
     test(`verdict: ${c.name} → ${c.verdict}`, async () => {
@@ -269,12 +364,28 @@ describe('verify', () => {
       assert.equal(r.code, 0, r.stderr);
       const j = parse(r);
       assert.equal(j.verdict, c.verdict);
+      if (c.band) assert.equal(j.verdict_band, c.band);
+      assert.ok(typeof j.verdict_confidence === 'number' && ['act', 'confirm', 'escalate'].includes(j.verdict_band));
       assert.deepEqual(Object.keys(j.answers).sort(), ['contradicted', 'needs_runtime', 'overstated', 'supported']);
       assert.equal(j.evidence_truncated, false);
       for (const k of Object.keys(c.script)) delete fake.script[k];
     });
   }
-  test('human output names the verdict; long evidence is truncated to 20k chars', async () => {
+  test('verdictOf (in-process) reports the deciding Noul, its confidence and band, and the downgrade', () => {
+    const n = (p) => ({ type: 'noul', noul: p });
+    const v = verdictOf({ supported: n(0.9), contradicted: n(0.05), needs_runtime: n(0.1), overstated: n(0.1) });
+    assert.deepEqual(v, { verdict: 'supported', decidedBy: 'supported', confidence: 0.8, band: 'act' });
+    const low = verdictOf({ supported: n(0.72), contradicted: n(0.1), needs_runtime: n(0.1), overstated: n(0.1) });
+    assert.equal(low.verdict, 'insufficient');
+    assert.equal(low.decidedBy, 'supported');
+    assert.equal(low.band, 'escalate');
+    assert.equal(verdictOf({ supported: n(0.3), contradicted: n(0.1), needs_runtime: n(0.1), overstated: n(0.1) }).downgradedFrom, undefined);
+  });
+  test('human output prints the verdict with p, confidence and band; long evidence is truncated to 20k chars', async () => {
+    Object.assign(fake.script, { supported: 0.9, contradicted: 0.05, needs_runtime: 0.1, overstated: 0.1 });
+    const ok = await run(['verify', '--claim', 'c', '--evidence', evidence()]);
+    assert.match(ok.stdout, /^verdict: supported \(decided by supported at p 0\.900, confidence 0\.800, band act\)/m);
+    for (const k of ['supported', 'contradicted', 'needs_runtime', 'overstated']) delete fake.script[k];
     const long = writeTmp('long.txt', 'y'.repeat(30000));
     const before = fake.requests.length;
     const r = await run(['verify', '--claim', 'c', '--evidence', long]);
@@ -284,6 +395,20 @@ describe('verify', () => {
     const sent = fake.requests[before].body.state.evidence;
     assert.ok(sent.length < 20100 && sent.includes('chars omitted'));
     assert.equal(fake.requests[before].body.state.claim, 'c');
+  });
+  test('--claim-file reads the claim from a file (or stdin) so tool output is never interpolated into a shell line', async () => {
+    const before = fake.requests.length;
+    const nasty = 'The string "$(rm -rf /)" and `whoami` appear in the binary';
+    const claimFile = writeTmp('claim.txt', `${nasty}\n`);
+    const r = await run(['verify', '--claim-file', claimFile, '--evidence', evidence(), '--json']);
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(fake.requests[before].body.state.claim, nasty);
+    const viaStdin = await run(['verify', '--claim-file', '-', '--evidence', evidence(), '--json'], { input: nasty });
+    assert.equal(viaStdin.code, 0, viaStdin.stderr);
+    assert.equal(parse(viaStdin).claim, nasty);
+    assert.equal((await run(['verify', '--claim', 'x', '--claim-file', claimFile, '--evidence', evidence()])).code, 1, 'not both');
+    assert.equal((await run(['verify', '--claim-file', '-', '--evidence', '-'])).code, 1, 'stdin only once');
+    assert.equal((await run(['verify', '--claim-file', path.join(tmp, 'missing.txt'), '--evidence', evidence()])).code, 1);
   });
   test('missing --claim or --evidence → exit 1', async () => {
     assert.equal((await run(['verify', '--evidence', evidence()])).code, 1);

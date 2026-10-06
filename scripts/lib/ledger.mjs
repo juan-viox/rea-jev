@@ -18,6 +18,11 @@ import { resolveHome, debug } from './hookio.mjs';
 import { effectClass, bareToolName } from './rea.mjs';
 
 const DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
+/** Largest file whose dropped head is still scanned for the latest `route` event. */
+const ROUTE_SCAN_MAX_BYTES = 256 * 1024 * 1024;
+const HEAD_CHUNK = 1024 * 1024;
+/** Default `is_re_task` cutoff (DESIGN.md §5.1 `T_ROUTE_RE`) used to tell RE routes from follow-up prompts. */
+const ROUTE_RE_DEFAULT = 0.35;
 
 /**
  * @typedef {Object} LedgerEvent
@@ -34,7 +39,8 @@ const DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
  * @property {number} [bytes]           post
  * @property {string[]} [notes]         post: low_relevance|unknown_candidate|agent_directed_text
  * @property {string} [effect]          post: effect class, when the hook recorded it
- * @property {string} [prompt_excerpt]  route, ≤200 chars
+ * @property {string} [prompt_excerpt]  route, ≤200 chars (ledger excerpt)
+ * @property {string} [prompt_for_jev]  route, ≤1200 chars: the redacted request the gate/evidence/stop hooks send to Jev
  * @property {string|null} [declared_target] route
  * @property {string} [target_hint]     route
  * @property {Record<string, unknown>} [answers]
@@ -113,7 +119,9 @@ export function appendEvent(sessionId, event, env = process.env) {
 
 /**
  * Read a session's events (oldest first). Malformed lines are skipped. Files
- * larger than `maxBytes` are read from the tail only. Returns [] on any error.
+ * larger than `maxBytes` are read from the tail only, except that the latest
+ * `route` event from the dropped head is kept (it anchors the declared target
+ * and the user's request for every later hook). Returns [] on any error.
  *
  * @param {string} sessionId
  * @param {NodeJS.ProcessEnv} [env]
@@ -162,15 +170,26 @@ export function readDecisions(opts = {}) {
  * Derive the facts the hooks need from a session's events.
  *
  * `identicalCallSeen(tool, hash)` is true when a successful `post` with the
- * same bare tool and `input_hash` exists and no `mutation`-class call has
- * completed since. `findIdenticalCall` returns that post event (for its
- * Evidence IDs) or null.
+ * same bare tool and `input_hash` exists, it returned something (non-zero
+ * bytes or an Evidence ID), and no `mutation`-class call has completed since.
+ * `findIdenticalCall` returns that post event (for its Evidence IDs) or null.
+ *
+ * `lastRoute` is the most recent route event of any kind (it carries the
+ * declared target forward through follow-up prompts). `lastReRoute` is the
+ * most recent route event that was a reverse-engineering request: not
+ * `decision: 'silent'` and not `is_re_task` below `T_ROUTE_RE`. `userRequest`
+ * is that event's redacted prompt (`prompt_for_jev`, else `prompt_excerpt`),
+ * so a "thanks, format that as a table" follow-up never becomes the question
+ * the evidence, gate and stop hooks judge against.
  *
  * @param {LedgerEvent[]} events
+ * @param {{routeRe?: number}} [opts] `routeRe` overrides the `is_re_task` cutoff (default 0.35)
  * @returns {{
  *   hasReaActivity: boolean,
  *   openBinaryWithoutClose: boolean,
  *   lastRoute: LedgerEvent|null,
+ *   lastReRoute: LedgerEvent|null,
+ *   userRequest: string,
  *   declaredTarget: string|null,
  *   toolCalls: number,
  *   toolCallsSinceMutation: number,
@@ -185,11 +204,13 @@ export function readDecisions(opts = {}) {
  *   events: LedgerEvent[],
  * }}
  */
-export function summarize(events) {
+export function summarize(events, opts = {}) {
   const list = Array.isArray(events) ? events.filter((e) => e && typeof e === 'object') : [];
+  const routeRe = Number.isFinite(opts.routeRe) ? opts.routeRe : ROUTE_RE_DEFAULT;
   let hasReaActivity = false;
   let openBinaryWithoutClose = false;
   let lastRoute = null;
+  let lastReRoute = null;
   let lastPost = null;
   let toolCalls = 0;
   let toolCallsSinceMutation = 0;
@@ -205,6 +226,7 @@ export function summarize(events) {
     switch (e.kind) {
       case 'route':
         lastRoute = e;
+        if (isReRoute(e, routeRe)) lastReRoute = e;
         break;
       case 'pre':
         hasReaActivity = true;
@@ -227,7 +249,8 @@ export function summarize(events) {
         if (ok && tool === 'record_unknown') unknownsRecorded += 1;
         if (Array.isArray(e.evidence_ids)) for (const id of e.evidence_ids) if (typeof id === 'string') evidence.add(id);
         if (Array.isArray(e.limitations)) for (const l of e.limitations) if (typeof l === 'string') limitations.add(l);
-        posts.push({ tool, hash: typeof e.input_hash === 'string' ? e.input_hash : null, ok, idx, event: e });
+        const hasBody = (Number(e.bytes) || 0) > 0 || (Array.isArray(e.evidence_ids) && e.evidence_ids.length > 0);
+        posts.push({ tool, hash: typeof e.input_hash === 'string' ? e.input_hash : null, ok, reusable: ok && hasBody, idx, event: e });
         break;
       }
       case 'stop':
@@ -247,15 +270,19 @@ export function summarize(events) {
     for (let i = posts.length - 1; i >= 0; i -= 1) {
       const p = posts[i];
       if (p.idx <= lastMutationIdx) break;
-      if (p.ok && p.hash === hash && p.tool === bare) return p.event;
+      if (p.reusable && p.hash === hash && p.tool === bare) return p.event;
     }
     return null;
   };
+
+  const userRequest = typeof lastReRoute?.prompt_for_jev === 'string' ? lastReRoute.prompt_for_jev : typeof lastReRoute?.prompt_excerpt === 'string' ? lastReRoute.prompt_excerpt : '';
 
   return {
     hasReaActivity,
     openBinaryWithoutClose,
     lastRoute,
+    lastReRoute,
+    userRequest,
     declaredTarget: typeof lastRoute?.declared_target === 'string' ? lastRoute.declared_target : null,
     toolCalls,
     toolCallsSinceMutation,
@@ -297,6 +324,14 @@ export function ensureDir(dir) {
   for (const d of missing.reverse()) fs.mkdirSync(d, { mode: 0o700 });
 }
 
+/** A route event counts as a reverse-engineering request unless it says otherwise. */
+function isReRoute(e, routeRe) {
+  if (e.decision === 'silent') return false;
+  const p = e.answers?.is_re_task?.noul;
+  if (typeof p === 'number' && Number.isFinite(p) && p < routeRe) return false;
+  return true;
+}
+
 function appendLine(file, record) {
   ensureDir(path.dirname(file));
   fs.appendFileSync(file, JSON.stringify(record) + '\n', { encoding: 'utf8', mode: 0o600 });
@@ -306,35 +341,66 @@ function readJsonl(file, maxBytes) {
   try {
     const stat = fs.statSync(file, { throwIfNoEntry: false });
     if (!stat || !stat.isFile()) return [];
+    if (stat.size <= maxBytes) return parseLines(fs.readFileSync(file, 'utf8'));
+
+    const fd = fs.openSync(file, 'r');
     let text;
-    if (stat.size <= maxBytes) {
-      text = fs.readFileSync(file, 'utf8');
-    } else {
-      const fd = fs.openSync(file, 'r');
-      try {
-        const buf = Buffer.alloc(maxBytes);
-        const n = fs.readSync(fd, buf, 0, maxBytes, stat.size - maxBytes);
-        text = buf.subarray(0, n).toString('utf8');
-        const nl = text.indexOf('\n');
-        text = nl >= 0 ? text.slice(nl + 1) : '';
-      } finally {
-        fs.closeSync(fd);
-      }
+    let headRoute = null;
+    try {
+      const buf = Buffer.alloc(maxBytes);
+      const n = fs.readSync(fd, buf, 0, maxBytes, stat.size - maxBytes);
+      text = buf.subarray(0, n).toString('utf8');
+      const nl = text.indexOf('\n');
+      text = nl >= 0 ? text.slice(nl + 1) : '';
+      if (stat.size <= ROUTE_SCAN_MAX_BYTES) headRoute = lastRouteIn(fd, stat.size - maxBytes + (nl >= 0 ? nl + 1 : 0));
+    } finally {
+      fs.closeSync(fd);
     }
-    const out = [];
-    for (const line of text.split('\n')) {
-      const s = line.trim();
-      if (!s) continue;
-      try {
-        const v = JSON.parse(s);
-        if (v && typeof v === 'object' && !Array.isArray(v)) out.push(v);
-      } catch {
-        /* skip malformed line */
-      }
-    }
+    const out = parseLines(text);
+    if (headRoute && !out.some((e) => e.kind === 'route')) out.unshift(headRoute);
     return out;
   } catch (err) {
     debug(`ledger read failed: ${err?.code ?? err?.name ?? 'error'}`);
     return [];
   }
+}
+
+function parseLines(text) {
+  const out = [];
+  for (const line of text.split('\n')) {
+    const s = line.trim();
+    if (!s) continue;
+    try {
+      const v = JSON.parse(s);
+      if (v && typeof v === 'object' && !Array.isArray(v)) out.push(v);
+    } catch {
+      /* skip malformed line */
+    }
+  }
+  return out;
+}
+
+/** The last `route` event in the first `end` bytes of `fd`, read in 1 MB chunks; null when none. */
+function lastRouteIn(fd, end) {
+  let last = null;
+  let carry = '';
+  const buf = Buffer.alloc(HEAD_CHUNK);
+  for (let pos = 0; pos < end; ) {
+    const n = fs.readSync(fd, buf, 0, Math.min(HEAD_CHUNK, end - pos), pos);
+    if (n <= 0) break;
+    pos += n;
+    const chunk = carry + buf.subarray(0, n).toString('utf8');
+    const lines = chunk.split('\n');
+    carry = lines.pop() ?? '';
+    for (const line of lines) {
+      if (!line.includes('"kind":"route"')) continue;
+      try {
+        const v = JSON.parse(line);
+        if (v && v.kind === 'route') last = v;
+      } catch {
+        /* skip */
+      }
+    }
+  }
+  return last;
 }

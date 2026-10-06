@@ -35,5 +35,18 @@ Initial release.
   thresholds (`REA_JEV_T_*`).
 - Offline test suite against a fake Jev server, repository validator
   (`scripts/validate.mjs`, with `--write-catalog`), and GitHub Actions CI.
+- Review fixes before release: the 429/529 retry now happens in real hook and
+  CLI processes (the retry timer no longer lets Node exit); provider answers
+  are validated against the questions; hard actions (`deny`, `block`,
+  categorical `verify` verdicts) require a decisive answer; the gate, evidence
+  and stop hooks judge against the last reverse-engineering request (kept at
+  1200 chars) rather than a later follow-up prompt; limitations are read from
+  REA's envelope only; passive live-process tools are never told static
+  analysis cannot establish execution; linear-time redaction with more token
+  shapes and a `PWD` exception; URL credentials stripped at the sniffer;
+  Evidence IDs capped per result; empty results are not reusable; `jev verify
+  --claim-file`; balanced `rank` chunks, bounded concurrency and partial
+  results; `classify` puts the instructions in each question and appends
+  `other`.
 
 [0.1.0]: https://github.com/juan-viox/rea-jev/releases/tag/v0.1.0
