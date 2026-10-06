@@ -17,22 +17,37 @@ export const MODES = Object.freeze(['off', 'shadow', 'advise', 'enforce']);
 /** Mode used when nothing valid is configured. */
 export const DEFAULT_MODE = 'advise';
 
+/** Default stdin cap for a hook payload. */
+export const STDIN_MAX_BYTES = 8 * 1024 * 1024;
+/** Bytes of an oversize payload kept for the prefix salvage (see `readStdinJson`). */
+const OVERSIZE_HEAD_BYTES = 256 * 1024;
+
 /**
  * Read all of stdin and parse it as a JSON object.
  *
- * Resolves `null` (never rejects) when stdin is a TTY, empty, too large,
- * not valid JSON, not a plain object, or does not close within `timeoutMs`.
- * Callers treat `null` as "exit 0, emit nothing".
+ * Resolves `null` (never rejects) when stdin is a TTY, empty, not valid JSON,
+ * not a plain object, or does not close within `timeoutMs`. Callers treat
+ * `null` as "exit 0, emit nothing".
  *
- * @param {{maxBytes?: number, timeoutMs?: number, stream?: NodeJS.ReadableStream}} [opts]
+ * A payload larger than `maxBytes` is not parsed in full: the rest of the
+ * stream is drained and discarded. With `salvagePrefix` (PostToolUse uses it)
+ * the first 256 KB are kept and the fields that precede the oversize one are
+ * recovered by cutting the JSON text at `"<salvagePrefix>":` and closing the
+ * object; the result then carries `__oversize_bytes__` (the total size) and no
+ * `<salvagePrefix>` field, so the hook can still record that the call
+ * happened. Without `salvagePrefix` an oversize payload resolves `null`.
+ *
+ * @param {{maxBytes?: number, timeoutMs?: number, stream?: NodeJS.ReadableStream, salvagePrefix?: string}} [opts]
  * @returns {Promise<Record<string, unknown>|null>}
  */
 export function readStdinJson(opts = {}) {
-  const { maxBytes = 8 * 1024 * 1024, timeoutMs = 3000, stream = process.stdin } = opts;
+  const { maxBytes = STDIN_MAX_BYTES, timeoutMs = 3000, stream = process.stdin, salvagePrefix } = opts;
   return new Promise((resolve) => {
     if (!stream || stream.isTTY) return resolve(null);
     const chunks = [];
     let size = 0;
+    let kept = 0;
+    let oversize = false;
     let done = false;
     const finish = (value) => {
       if (done) return;
@@ -50,12 +65,19 @@ export function readStdinJson(opts = {}) {
     timer.unref?.();
     stream.on('data', (chunk) => {
       size += chunk.length;
-      if (size > maxBytes) return finish(null);
-      chunks.push(chunk);
+      if (size > maxBytes) {
+        if (!salvagePrefix) return finish(null);
+        oversize = true;
+      }
+      if (kept < (oversize ? OVERSIZE_HEAD_BYTES : maxBytes)) {
+        chunks.push(chunk);
+        kept += chunk.length;
+      }
     });
     stream.on('end', () => {
       const text = Buffer.concat(chunks.map((c) => (Buffer.isBuffer(c) ? c : Buffer.from(String(c))))).toString('utf8').trim();
       if (!text) return finish(null);
+      if (oversize) return finish(salvageOversize(text.slice(0, OVERSIZE_HEAD_BYTES), salvagePrefix, size));
       try {
         const parsed = JSON.parse(text);
         finish(parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null);
@@ -70,6 +92,30 @@ export function readStdinJson(opts = {}) {
       finish(null);
     }
   });
+}
+
+/**
+ * Recover the fields before `"<key>":` from the head of an oversize JSON
+ * payload. Returns null when the key is not in the head or the prefix does
+ * not close into an object (e.g. a huge field precedes it).
+ *
+ * @param {string} head
+ * @param {string} key
+ * @param {number} totalBytes
+ * @returns {Record<string, unknown>|null}
+ */
+export function salvageOversize(head, key, totalBytes) {
+  const marker = new RegExp(`,?\\s*"${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"\\s*:`);
+  const m = marker.exec(head);
+  if (!m) return null;
+  try {
+    const parsed = JSON.parse(`${head.slice(0, m.index)}}`);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    parsed.__oversize_bytes__ = totalBytes;
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 /**

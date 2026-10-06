@@ -89,7 +89,7 @@ export const SECRET_PATTERNS = Object.freeze(
       // credential key (`db_pwd=`, SQL Server `Pwd=`) unless its value is a
       // filesystem path, which is the shell's `PWD`/`OLDPWD` variable.
       kind: 'kv',
-      re: /((?:password|passwd|secret|token|api[_-]?key|apikey|access[_-]?key|client[_-]?secret|sessionid|session|cookie|auth)(?:["']?\s*[=:]\s*["']?)|pwd(?:["']?\s*[=:]\s*["']?)(?![/~]))([^\s"'&,;}\])]{3,})/gi,
+      re: /((?:password|passwd|secret|token|api[_-]?key|apikey|access[_-]?key|client[_-]?secret|sessionid|session|cookie|auth)(?:["']?\s*[=:]\s*["']?)|pwd(?:["']?\s*[=:]\s*["']?)(?![/~]))(?!\[REDACTED:)([^\s"'&,;}\])]{3,})/gi,
       replace: '$1[REDACTED:kv]',
     },
     {
@@ -113,6 +113,53 @@ export function redact(text) {
   if (!s) return '';
   for (const p of SECRET_PATTERNS) s = s.replace(p.re, p.replace);
   return s;
+}
+
+/** Object keys whose value is a credential regardless of the value's shape (`"token": 12345`). */
+export const CREDENTIAL_KEY_RE = /(?:^|[_.-])(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|client[_-]?secret|sessionid|session|cookie|auth)$/i;
+
+const REDACT_OBJECT_MAX_DEPTH = 32;
+
+/**
+ * Redact a parsed JSON value structurally: string leaves go through
+ * `redact()`, and any leaf (string, number, boolean) under a credential-named
+ * key becomes `[REDACTED:kv]`, so a numeric token never survives and the value
+ * stays an object (serialising, redacting and re-parsing would turn
+ * `"token": 12345` into invalid JSON). `pwd`/`PWD` with a path value is the
+ * shell variable and is left alone. Depth is bounded; deeper values are
+ * stringified and redacted as text.
+ *
+ * @template T
+ * @param {T} value
+ * @param {number} [depth]
+ * @returns {T|string}
+ */
+export function redactObject(value, depth = 0) {
+  if (typeof value === 'string') return redact(value);
+  if (value == null || typeof value !== 'object') return value;
+  if (depth > REDACT_OBJECT_MAX_DEPTH) return redact(toText(value));
+  if (Array.isArray(value)) return value.map((v) => redactObject(v, depth + 1));
+  const out = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (isCredentialKey(k, v) && (v === null || typeof v !== 'object')) out[k] = '[REDACTED:kv]';
+    else out[k] = redactObject(v, depth + 1);
+  }
+  return out;
+}
+
+/**
+ * True when `key` names a credential (`GITHUB_TOKEN`, `api_key`, `password`…).
+ * `pwd`-style keys do not count when the value is a filesystem path.
+ *
+ * @param {string} key
+ * @param {unknown} [value]
+ * @returns {boolean}
+ */
+export function isCredentialKey(key, value) {
+  const k = String(key ?? '');
+  if (!CREDENTIAL_KEY_RE.test(k)) return false;
+  if (/pwd$/i.test(k) && typeof value === 'string' && /^[/~]/.test(value)) return false;
+  return true;
 }
 
 /**

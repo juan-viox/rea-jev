@@ -37,6 +37,17 @@ const MUTATION_PREFIX = ['set_', 'annotate_', 'import_', 'export_'];
 const STATUS_EXACT = new Set(['binary_session', 'list_unknowns', 'get_navigation_context', 'get_evidence_bundle', 'verify_unknown_resolution', 'list_documents']);
 const STATUS_PREFIX = ['current_'];
 const RUNTIME_PREFIX = ['capture_', 'observe_'];
+/** Catalog kinds whose network-attaching tools observe a live browser, Electron or Node process. */
+const LIVE_PROVIDER_KINDS = new Set(['browser-provider', 'electron-provider', 'runtime-provider']);
+/** Tools that compare or reconcile runtime captures; their results legitimately describe observed behavior. */
+const RUNTIME_EVIDENCE_TOOLS = new Set(['compare_web_captures', 'compare_web_screenshots', 'reconcile_javascript_runtime']);
+/** Name fallback for `isStaticTool` when the catalog is unavailable. */
+const LIVE_TOOL_FALLBACK = new Set([
+  'list_browser_targets', 'inspect_web_page', 'analyze_web_bundle', 'discover_webmcp_tools',
+  'list_electron_targets', 'inspect_electron_page', 'list_javascript_runtime_targets',
+]);
+/** Evidence IDs kept per result; the rest is counted (`evidenceCount`) so a hostile artifact cannot bloat the ledger. */
+export const EVIDENCE_IDS_MAX = 64;
 
 /**
  * First tool per route `target_kind`, from REA's own skill. `then` lists the
@@ -159,13 +170,24 @@ export function effectClass(toolName) {
 }
 
 /**
- * True when the tool performs static analysis (anything but `runtime`-class).
+ * True when the tool performs static analysis, i.e. its result cannot describe
+ * anything as executed or observed. False for every `capture_*` / `observe_*`
+ * tool (whether or not it launches a process), for the passive CDP / Inspector
+ * tools that attach to a live browser, Electron or Node process (catalog kind
+ * browser-/electron-/runtime-provider with `accessesNetwork`), and for the
+ * tools that compare or reconcile runtime captures. `analyze_javascript_application`
+ * stays static: it reads files. The gate's `effectClass` is unchanged by this.
  *
  * @param {string} toolName
  * @returns {boolean}
  */
 export function isStaticTool(toolName) {
-  return effectClass(toolName) !== 'runtime';
+  const name = bareToolName(toolName);
+  if (RUNTIME_PREFIX.some((p) => name.startsWith(p))) return false;
+  if (RUNTIME_EVIDENCE_TOOLS.has(name)) return false;
+  const entry = catalogTool(name);
+  if (entry) return !(LIVE_PROVIDER_KINDS.has(entry.kind) && entry.effects?.accessesNetwork === true);
+  return !LIVE_TOOL_FALLBACK.has(name);
 }
 
 /**
@@ -231,17 +253,32 @@ export function hashInput(toolName, toolInput) {
  * Parse an MCP tool result from REA.
  *
  * Accepts `{content:[{type:'text',text}], structuredContent?, isError?}`, a
- * plain string, or any object (stringified). Evidence IDs are collected from
- * the text; limitations from `limitations`, `limitation`, `coverage.*unknown*`,
- * `residual_unknowns` and `unknowns` arrays via a bounded walk (depth ≤ 6,
- * ≤ 40 items). `unknowns` holds the subset that came from the two unknown keys.
+ * bare content array `[{type:'text',text}]`, a plain string, or any object
+ * (stringified). Evidence IDs are collected from the text (the first
+ * `EVIDENCE_IDS_MAX` unique ones; `evidenceCount` is the full count).
+ * Limitations come only from REA's envelope positions, never from arbitrary
+ * nested artifact data (a plist or package.json echoed by REA may carry an
+ * `unknowns` key of its own): the keys `limitations`, `limitation`,
+ * `residual_unknowns`, `unknowns`, and `coverage.*unknown*` at the top level,
+ * under `result`, and under `result.coverage` / `coverage` (≤ 40 items).
+ * `unknowns` holds the subset that came from the two unknown keys. `empty` is
+ * true when there was no response at all (null, '', `{}`, `[]`, or content
+ * with no text), which the evidence hook records as a failed call so the
+ * gate never treats it as a reusable result.
  *
  * @param {unknown} toolResponse
- * @returns {{text: string, json: unknown|null, evidenceIds: string[], limitations: string[], unknowns: string[], truncated: boolean, error: string|null, bytes: number}}
+ * @returns {{text: string, json: unknown|null, evidenceIds: string[], evidenceCount: number, limitations: string[], unknowns: string[], truncated: boolean, error: string|null, bytes: number, empty: boolean}}
  */
 export function parseReaResult(toolResponse) {
-  const out = { text: '', json: null, evidenceIds: [], limitations: [], unknowns: [], truncated: false, error: null, bytes: 0 };
-  if (toolResponse == null) return out;
+  const out = { text: '', json: null, evidenceIds: [], evidenceCount: 0, limitations: [], unknowns: [], truncated: false, error: null, bytes: 0, empty: false };
+  if (toolResponse == null) {
+    out.empty = true;
+    return out;
+  }
+  // Some hosts hand the MCP content array over bare.
+  if (Array.isArray(toolResponse) && toolResponse.every((c) => c && typeof c === 'object' && !Array.isArray(c) && ('type' in c || 'text' in c))) {
+    toolResponse = { content: toolResponse };
+  }
 
   let text = '';
   let structured = null;
@@ -259,10 +296,16 @@ export function parseReaResult(toolResponse) {
     }
     if (toolResponse.structuredContent && typeof toolResponse.structuredContent === 'object') structured = toolResponse.structuredContent;
     isError = toolResponse.isError === true;
-    if (!text && !structured) text = safeStringify(toolResponse);
+    if (!text && !structured) {
+      const keys = Array.isArray(toolResponse) ? toolResponse.length : Object.keys(toolResponse).length;
+      const contentOnly = Array.isArray(toolResponse.content) && keys === 1 + (isError ? 1 : 0);
+      if (keys === 0 || contentOnly) out.empty = true;
+      text = keys === 0 ? '' : safeStringify(toolResponse);
+    }
   } else {
     text = String(toolResponse);
   }
+  if (!text.trim() && !structured) out.empty = true;
 
   out.text = text;
   out.bytes = Buffer.byteLength(text, 'utf8');
@@ -281,11 +324,13 @@ export function parseReaResult(toolResponse) {
   out.json = json ?? null;
 
   const idSource = structured ? `${text}\n${safeStringify(structured)}` : text;
-  out.evidenceIds = unique(idSource.match(EVIDENCE_ID_RE) ?? []);
+  const allIds = unique(idSource.match(EVIDENCE_ID_RE) ?? []);
+  out.evidenceCount = allIds.length;
+  out.evidenceIds = allIds.slice(0, EVIDENCE_IDS_MAX);
 
-  if (json && typeof json === 'object') {
+  if (json && typeof json === 'object' && !Array.isArray(json)) {
     const ctx = { limitations: [], unknowns: [], seen: new Set(), count: 0, truncated: false };
-    walk(json, 0, ctx);
+    collectEnvelope(json, ctx);
     out.limitations = ctx.limitations;
     out.unknowns = ctx.unknowns;
     out.truncated = ctx.truncated;
@@ -300,29 +345,32 @@ export function parseReaResult(toolResponse) {
   return out;
 }
 
-const WALK_MAX_DEPTH = 6;
 const WALK_MAX_ITEMS = 40;
 
-function walk(node, depth, ctx) {
-  if (ctx.count >= WALK_MAX_ITEMS || depth > WALK_MAX_DEPTH || node == null || typeof node !== 'object') return;
-  if (Array.isArray(node)) {
-    for (const v of node) walk(v, depth + 1, ctx);
-    return;
-  }
+/**
+ * Collect limitations from REA's envelope positions only, in document order:
+ * the root object, `result`, and the `coverage` object at either of those.
+ * Nothing deeper is read, so keys that belong to the analyzed artifact's own
+ * data (a plist, a package.json) cannot pose as REA limitations.
+ */
+function collectEnvelope(root, ctx) {
+  collectContainer(root, ctx, { isCoverage: false, isRoot: true });
+}
+
+function collectContainer(node, ctx, { isCoverage, isRoot }) {
   for (const [k, v] of Object.entries(node)) {
     const key = k.toLowerCase();
     if (key === 'truncated' && v === true) ctx.truncated = true;
-    if (key === 'limitations' || key === 'limitation') {
-      collect(v, ctx.limitations, ctx);
-    } else if (key === 'residual_unknowns' || key === 'unknowns') {
-      collect(v, ctx.unknowns, ctx, ctx.limitations);
-    } else if (key === 'coverage' && v && typeof v === 'object' && !Array.isArray(v)) {
-      for (const [ck, cv] of Object.entries(v)) if (/unknown/i.test(ck)) collect(cv, ctx.limitations, ctx);
-      walk(v, depth + 1, ctx);
-    } else {
-      walk(v, depth + 1, ctx);
-    }
+    if (key === 'limitations' || key === 'limitation') collect(v, ctx.limitations, ctx);
+    else if (key === 'residual_unknowns' || key === 'unknowns') collect(v, ctx.unknowns, ctx, ctx.limitations);
+    else if (isCoverage && /unknown/i.test(key)) collect(v, ctx.limitations, ctx);
+    else if (!isCoverage && key === 'coverage' && isObj(v)) collectContainer(v, ctx, { isCoverage: true, isRoot: false });
+    else if (isRoot && key === 'result' && isObj(v)) collectContainer(v, ctx, { isCoverage: false, isRoot: false });
   }
+}
+
+function isObj(v) {
+  return v != null && typeof v === 'object' && !Array.isArray(v);
 }
 
 function collect(value, list, ctx, mirror) {

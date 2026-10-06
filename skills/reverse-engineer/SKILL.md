@@ -46,11 +46,11 @@ When a result has more than about 30 candidates, do not read them all. Save the 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/jev.mjs" rank "<what you are looking for>" --items <file> --top 15
 node "${CLAUDE_PLUGIN_ROOT}/scripts/jev.mjs" classify --items <file> --labels parser,network,storage,ui,crypto,other --instructions "<one question>"
-node "${CLAUDE_PLUGIN_ROOT}/scripts/jev.mjs" verify --claim "<conclusion>" --evidence <file>
+node "${CLAUDE_PLUGIN_ROOT}/scripts/jev.mjs" verify --claim-file <claim.txt> --evidence <file>
 node "${CLAUDE_PLUGIN_ROOT}/scripts/jev.mjs" ask --state <file> --questions '<json>'
 ```
 
-Act on an answer at confidence ≥ 0.75, confirm it with one more probe between 0.45 and 0.75, and treat anything lower as unknown. Verify every conclusion with `jev verify` before writing it down; verdicts are `supported`, `contradicted`, `insufficient`, `needs_runtime`. Never send secrets, whole binaries, or more than 2 MB. Copy-pasteable recipes and question-writing rules: [references/jev-recipes.md](references/jev-recipes.md).
+Write the claim to a file with your Write tool and pass `--claim-file`; a conclusion often quotes strings from the binary (`$(…)`, backticks, quotes), and those must never be interpolated into a shell command line. Act on an answer at confidence ≥ 0.75, confirm it with one more probe between 0.45 and 0.75, and treat anything lower as unknown. Verify every conclusion with `jev verify` before writing it down; verdicts are `supported`, `contradicted`, `insufficient`, `needs_runtime`, each printed with the deciding probability, confidence and band. Never send secrets, whole binaries, or more than 2 MB. Copy-pasteable recipes and question-writing rules: [references/jev-recipes.md](references/jev-recipes.md).
 
 ## 6. Evidence rules
 
@@ -62,7 +62,7 @@ When the request spans several features, subsystems, apps, or versions (the rout
 
 ## 8. From understanding to code
 
-When the user wants the feature rebuilt, separate observed behavior (what the artifact demonstrably does, which the port must preserve) from design choices (how the original does it, which the port may change, stated explicitly). Turn the observations into an obligation list with Evidence IDs and a verification method per row. Use `build_reconstruction_obligation_ledger`, `evaluate_reconstruction_coverage`, and `verify_reconstruction` where their inputs exist; for JavaScript ports use `compare_source_to_bundle` and `compare_application_versions`. Then build with normal coding tools. Worked example: [references/reconstruction.md](references/reconstruction.md).
+When the user wants the feature rebuilt, separate observed behavior (what the artifact demonstrably does, which the port must preserve) from design choices (how the original does it, which the port may change, stated explicitly). Turn the observations into an obligation list with Evidence IDs and a verification method per row. Use `build_reconstruction_obligation_ledger`, `evaluate_reconstruction_coverage`, and `verify_reconstruction` where their inputs exist; for JavaScript ports use `compare_source_to_bundle` (its `reference` is a committed source graph of your port that only the CLI produces: `npx -y rea-agents@4.0.1 import-reference-source <port-root>`; without that step compare two analyzed graphs with `compare_application_versions` instead). Then build with normal coding tools. Worked example: [references/reconstruction.md](references/reconstruction.md).
 
 ## 9. Scope and ethics
 

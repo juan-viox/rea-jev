@@ -81,9 +81,9 @@ answers, 1 on usage error, 2 on provider failure.
 | Command | What it does |
 |---|---|
 | `jev ask --state <file\|-\|json> --questions <json\|file>` | Raw request; prints answers with confidence and band. |
-| `jev rank "<query>" --items <file\|-> [--top 15] [--id-field id --text-field text]` | Ranks items (JSON lines, a JSON array, or plain lines) against a query, in chunks of at most 200 as one Choice per chunk plus a `match_exists` Noul. Use on `search_strings`, `list_procedures`, `list_names`, `xrefs`, and `inspect_artifact` inventories. |
-| `jev classify --items <file\|-> --labels a,b,c[,other] --instructions "<q>"` | One Choice per item, batched 40 per request. Sort procedures into roles or strings into kinds. |
-| `jev verify --claim "<text>" --evidence <file\|->` | Nouls `supported`, `contradicted`, `needs_runtime`, `overstated` against the evidence text; prints a verdict. |
+| `jev rank "<query>" --items <file\|-> [--top 15] [--id-field id --text-field text]` | Ranks items (JSON lines, a JSON array, or plain lines) against a query, in balanced chunks of at most 200 as one Choice per chunk plus a `match_exists` Noul; at most 4 requests in flight; a failed chunk leaves its items unranked (`partial: true`) instead of failing the command. Use on `search_strings`, `list_procedures`, `list_names`, `xrefs`, and `inspect_artifact` inventories. |
+| `jev classify --items <file\|-> --labels a,b,c[,other] --instructions "<q>"` | One Choice per item, batched 40 per request; `other` is appended when the label set has no "none of these". Sort procedures into roles or strings into kinds. |
+| `jev verify (--claim "<text>" \| --claim-file <file\|->) --evidence <file\|->` | Nouls `supported`, `contradicted`, `needs_runtime`, `overstated` against the evidence text; prints a verdict with the deciding probability, confidence and band (an escalate-band verdict is `insufficient`). Use `--claim-file` when the claim quotes strings from the program. |
 | `jev doctor [--offline]` | Provider and key resolution, one-question round trip with latency and model version, REA pin and whether `npx rea-agents` resolves (`--offline` skips that probe), hook hints, ledger directory. |
 | `jev stats [--days 7]` | Counts, cost estimate, latency percentiles, and bands from `decisions.jsonl`. |
 
@@ -112,7 +112,7 @@ Set with the plugin option **mode** or `REA_JEV_MODE`.
 | `JEV_BASE_URL` | Override the endpoint (tests point it at `tests/fake-jev.mjs`). |
 | `REA_JEV_MODEL` | Override the model id. |
 | `REA_JEV_MODE` | `off` \| `shadow` \| `advise` (default) \| `enforce`. |
-| `REA_JEV_TIMEOUT_MS` | Per-call budget including one retry on 429/529. Hooks default to `4000`; the `jev` CLI defaults to `20000` when it is unset, or takes `--timeout <ms>`. |
+| `REA_JEV_TIMEOUT_MS` | Per-call budget including one retry on 429/529. Hooks default to `4000` and clamp it below their own safety ceiling (route/gate 5.5 s, evidence 10.5 s, stop 20.5 s); the `jev` CLI defaults to `20000` when it is unset, or takes `--timeout <ms>`. |
 | `REA_JEV_HOME` | Ledger directory (default `$CLAUDE_PLUGIN_DATA` if set, else `~/.rea-jev`). |
 | `REA_JEV_LOG` | `1` appends every decision to `$REA_JEV_HOME/decisions.jsonl`. |
 | `REA_JEV_DEBUG` | `1` prints why each hook did what it did, on stderr. |
@@ -146,19 +146,30 @@ Set with the plugin option **mode** or `REA_JEV_MODE`.
   not calibrated on a labeled corpus. `REA_JEV_LOG=1` and `jev stats` exist so
   you can tune them on your own decisions.
 - **Hooks fail open.** No key, a timeout, a 4xx or 5xx, or a malformed answer
-  means the hook exits 0 and emits nothing. A hook that blocks by accident
-  costs more trust than one that misses a case. The only hard denies are local
-  and deterministic: an identical repeated inspection call, and a non-loopback
-  CDP endpoint.
+  means the hook exits 0 and emits nothing (answers are validated against the
+  questions; an out-of-range or foreign value counts as no opinion). A hook
+  that blocks by accident costs more trust than one that misses a case. In
+  `advise` the only denies are local and deterministic: an identical repeated
+  inspection call, and a non-loopback `cdp_endpoint`/`inspector_endpoint` on
+  any REA tool. `enforce` adds one Jev-based deny: a runtime or extraction call
+  whose `within_scope` falls below `T_GATE_SCOPE` with a decisive answer
+  (confidence at or above the confirm band); a near-coin-flip only asks. The
+  Stop hook likewise blocks only on decisive answers and never when your
+  message cites the Evidence IDs that were returned.
 - **What leaves the machine.** Only the fields each question needs: a prompt
   excerpt (at most 3000 chars), the REA tool name with a redacted input excerpt
   (1500), a redacted result excerpt (6000, head and tail), the final message
-  (4000), and short derived facts. Secrets (`sk-…`, `ghp_…`, `AKIA…`, JWTs,
-  bearer tokens, `password=`, private key blocks, URL userinfo) are masked
-  before sending. The analyzed binary is never uploaded; REA itself analyzes
-  locally. With OpenRouter, requests transit OpenRouter. The ledger on disk
-  holds hashes, Evidence IDs, and excerpts of at most 200 chars, never full tool
-  inputs or outputs.
+  (4000), and your last reverse-engineering request (at most 1200 chars).
+  Secrets (`sk-…`, `sk_live_…`, `ghp_…`, `glpat-…`, `AKIA…`, `AIza…`, `xox?-…`,
+  JWTs, bearer tokens, `password=`/`token=`/`cookie=` pairs, private key blocks,
+  URL userinfo) are masked before sending, and URLs in prompts lose their
+  credentials and query strings before they reach a hint, the ledger, or Jev.
+  The analyzed binary is never uploaded; REA itself analyzes locally. With
+  OpenRouter, requests transit OpenRouter. The ledger on disk holds hashes,
+  Evidence IDs (at most 64 per result), excerpts of at most 200 chars, and one
+  1200-char redacted copy of your request per prompt, never full tool inputs or
+  outputs. The PostToolUse hook reads at most 32 MB of a result; a larger one is
+  recorded from its prefix (tool, input hash, size) and not judged.
 - **Cost and latency.** About $0.042 per million input tokens, output free;
   one call is roughly 1 to 3k tokens, so a few hundredths of a cent, in about
   300 ms. Inspection calls never cost a Jev request.

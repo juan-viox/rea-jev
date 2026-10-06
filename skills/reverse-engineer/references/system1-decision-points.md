@@ -11,7 +11,7 @@ The plugin asks Jev (TypeSafe System One, model `jev-1.13`) at four machine-spee
 | `advise` | injects route note | redundancy → `deny`; scope/risk → `ask`; else silent | injects evidence notes | never blocks; `systemMessage` with verdict |
 | `enforce` | injects route note | redundancy → `deny`; out-of-scope → `deny`; risk → `ask` | injects evidence notes | may `block` once per stop |
 
-The plugin option `CLAUDE_PLUGIN_OPTION_MODE` wins over `REA_JEV_MODE` when set. Every threshold below has an override `REA_JEV_T_<KEY>`; `REA_JEV_TIMEOUT_MS` (default 4000) bounds each Jev call including one retry.
+The plugin option `CLAUDE_PLUGIN_OPTION_MODE` wins over `REA_JEV_MODE` when set. Every threshold below has an override `REA_JEV_T_<KEY>`; `REA_JEV_TIMEOUT_MS` (default 4000) bounds each Jev call including one retry. A hard action (`deny`, `block`) also needs the deciding answer to be *decisive*: confidence at or above 0.45 (a Noul at or below 0.275, or at or above 0.725). A near-coin-flip that crosses a threshold degrades to `ask` or to a `systemMessage`. Malformed or out-of-range answers are dropped and count as no opinion.
 
 ## 1. Route — `UserPromptSubmit`
 
@@ -22,7 +22,7 @@ The plugin option `CLAUDE_PLUGIN_OPTION_MODE` wins over `REA_JEV_MODE` when set.
 ```
 [rea-jev System 1 route · jev-1.13 · 312 ms]
 target: native_binary (0.91) → first tool: open_binary(path), then binary_overview / search_strings / trace_feature
-workflow: investigate_feature (0.88) · scope: 1 "one feature in one subsystem" · runtime needed: 0.12 · build after: 0.81
+workflow: investigate_feature (0.88) · scope: 1.0 "one feature in one subsystem" · runtime needed: 0.12 · build after: 0.81
 hint: /Applications/Notes.app is a macOS app bundle
 Use the reverse-engineer skill. Keep observations, inferences, and unknowns separate; cite Evidence IDs.
 ```
@@ -39,8 +39,8 @@ or, when `target_kind` confidence is below `T_ROUTE_MIN` (0.5) or the pick is `u
 
 1. Not an REA tool, or mode `off` → silent.
 2. **Redundancy (local, free).** For `inspect`-class and `enhanced` tools: if this session already has a successful result for the same tool with byte-identical input, and no `mutation`-class call since → `deny`: *"rea-jev: identical `<tool>` call already returned Evidence <ids|n records>; reuse that result instead of repeating the call."*
-3. **Hard rules (local, free) for `runtime`-class tools:** `capture_process_scenario.executable` outside both `cwd` and the declared target directory (and not a bare command name) → `ask`; a scenario `environment` value that looks like a credential → `ask` (*"REA records environment; confirm or remove it"*); a non-loopback `cdp_endpoint` or `inspector_endpoint` → `deny` (*"REA only supports loopback endpoints; a remote endpoint would observe another machine"*).
-4. **Jev gate**, only for `runtime`-class tools and for `extract_artifact`, `export_evidence_bundle`, `import_evidence_bundle` with paths outside `cwd`. State: your request, the declared target, the tool, the redacted input. Questions: `within_scope`, `irreversible`, `runtime_requested` (all nouls). Policy: `within_scope` < `T_GATE_SCOPE` (0.3) → `deny` in `enforce`, `ask` in `advise`; `irreversible` > `T_GATE_IRREV` (0.8) → `ask`; `runtime_requested` < `T_GATE_RUNTIME` (0.3) for a `capture_*` tool → `ask` (*"the user did not ask for runtime execution; confirm before launching"*). Jev failure → silent.
+3. **Hard rules (local, free).** Any REA tool carrying a non-loopback `cdp_endpoint` or `inspector_endpoint` (browser, Electron and Inspector tools included: `list_browser_targets`, `list_javascript_runtime_targets`, `inspect_web_page`, …) → `deny` (*"REA only supports loopback endpoints; a remote endpoint would observe another machine"*). For `runtime`-class tools: `capture_process_scenario.executable` outside both `cwd` and the declared target directory (and not a bare command name) → `ask`; a scenario `environment` value that looks like a credential → `ask` (*"REA records environment; confirm or remove it"*; `PWD`/`OLDPWD` do not count).
+4. **Jev gate**, only for `runtime`-class tools and for `extract_artifact`, `export_evidence_bundle`, `import_evidence_bundle` with paths outside `cwd`. State: your last reverse-engineering request (not a follow-up such as "format that as a table"), the declared target, the tool, the redacted input. Questions: `within_scope`, `irreversible`, `runtime_requested` (all nouls). Policy: `within_scope` < `T_GATE_SCOPE` (0.3) → `deny` in `enforce` when decisive (p ≤ 0.275), otherwise `ask`; `irreversible` > `T_GATE_IRREV` (0.8) → `ask`; `runtime_requested` < `T_GATE_RUNTIME` (0.3) for a `capture_*` tool → `ask` (*"the user did not ask for runtime execution; confirm before launching"*). Jev failure → silent.
 5. Everything else → silent; the host's normal permission flow applies. Inspection calls never cost a Jev request.
 
 **Respond:** a redundancy `deny` means the earlier result is still valid — reuse it; if you need different data, change the input (a narrower `pattern`, a different `procedure`), which is a different hash. An `ask` is a question to the user through the host's permission prompt: add one line explaining why the capture is in scope and necessary, then accept the answer. A loopback `deny` is not negotiable; do not tunnel or proxy around it.
@@ -49,7 +49,7 @@ or, when `target_kind` confidence is below `T_ROUTE_MIN` (0.5) or the pick is `u
 
 ## 3. Evidence — `PostToolUse` on REA tools
 
-**Fires** for every REA result (ledger entry: Evidence IDs, limitations, bytes, ok). Jev is **skipped** when mode is `off`, the tool is `status`- or `mutation`-class (except `open_binary`, scanned locally for limitations), the result text is shorter than 400 characters, or the result `isError`. Otherwise Jev sees your question, the tool, a 300-char input excerpt, a redacted 6000-char result excerpt (head 4500, tail 1500), and the first 8 limitations, and answers `relevance` (score 0–3), `unrecorded_unknown`, `agent_directed_text`, `claims_runtime` (nouls).
+**Fires** for every REA result (ledger entry: Evidence IDs, limitations, bytes, ok; an empty result is recorded as failed and is never reused). Jev is **skipped** when mode is `off`, the tool is `status`- or `mutation`-class (except `open_binary`, scanned locally for limitations), the result text is shorter than 400 characters, or the result `isError`. Otherwise Jev sees your last reverse-engineering request (when there is one), the tool, a 300-char input excerpt, a redacted 6000-char result excerpt (head 4500, tail 1500), and the first 8 limitations REA itself reported (never an `unknowns` key inside the artifact's own data), and answers `relevance` (score 0–3; only when a request exists), `unrecorded_unknown`, `agent_directed_text`, and, for static tools only, `claims_runtime` (nouls). `observe_*`, `capture_web_screenshot`, `inspect_web_page`, `analyze_web_bundle` and the other passive live-process tools are not static.
 
 **May say** (only when actionable; otherwise silent):
 
@@ -64,9 +64,9 @@ or, when `target_kind` confidence is below `T_ROUTE_MIN` (0.5) or the pick is `u
 
 ## 4. Completeness — `Stop`
 
-**Fires** when a turn ends. Exits immediately (free) when `stop_hook_active` is set, mode is `off`, or the ledger shows no REA activity this session. Caps: at most 1 block per stop, 2 blocks per session, none within 60 s of the previous one. Local facts first: `open_session_not_closed`, `evidence_ids_seen`, `evidence_ids_cited` (full `ev_` IDs found in your final message), `limitations_flagged`, `unknowns_recorded`, `tool_calls`. Jev then answers, over your request and final message: `claims_complete`, `separates_epistemics`, `cites_evidence`, `unaddressed_question` (nouls) and `outcome` (choice: `complete`, `partial_with_open_questions`, `blocked`, `not_an_investigation`).
+**Fires** when a turn ends. Exits immediately (free) when `stop_hook_active` is set, mode is `off`, or the ledger shows no REA activity this session. Caps: at most 1 block per stop, 2 blocks per session, none within 60 s of the previous one. Local facts first: `open_session_not_closed`, `evidence_ids_seen`, `evidence_ids_cited` (full `ev_` IDs found in your final message), `limitations_flagged`, `unknowns_recorded`, `tool_calls`. Jev then answers, over your last reverse-engineering request (up to 1200 characters of it, never a follow-up prompt) and your final message: `claims_complete`, `separates_epistemics`, `cites_evidence` ("does `final_message` tie each main conclusion to the Evidence IDs or tool results it rests on?"), `unaddressed_question` (nouls) and `outcome` (choice: `complete`, `partial_with_open_questions`, `blocked`, `not_an_investigation`).
 
-**Policy (`enforce` only):** block when `outcome` is not `blocked`/`not_an_investigation`, `claims_complete` ≥ `T_STOP_DONE` (0.7), and any of: `separates_epistemics` ≤ `T_STOP_EPISTEMICS` (0.3); `cites_evidence` ≤ `T_STOP_CITES` (0.3) while Evidence IDs were seen; `unaddressed_question` ≥ `T_STOP_UNADDRESSED` (0.7); or the native session is still open. The reason lists only the triggered items, for example:
+**Policy (`enforce` only):** block when `outcome` is not `blocked`/`not_an_investigation`, `claims_complete` ≥ `T_STOP_DONE` (0.7), and any of: `separates_epistemics` ≤ `T_STOP_EPISTEMICS` (0.3); `cites_evidence` ≤ `T_STOP_CITES` (0.3) while Evidence IDs were seen *and none appears in your message* (the regex count comes first: citing the IDs always satisfies this item); `unaddressed_question` ≥ `T_STOP_UNADDRESSED` (0.7); or the native session is still open. Only decisive Jev items count (confidence ≥ 0.45), and when `claims_complete` is itself a near-coin-flip (below 0.725) the hook shows the verdict to the user instead of blocking. The reason lists only the triggered items, for example:
 
 ```
 rea-jev: the investigation reports completion (0.91) but: conclusions do not cite Evidence IDs although 14 were returned; the native session is still open. Cite the Evidence IDs behind each conclusion, state what is inferred vs observed vs unknown, and call close_binary. If something cannot be established, say so plainly instead of presenting it as done.
@@ -87,7 +87,7 @@ No Jev call. One line of context: `rea-jev <version> · mode advise · Jev key: 
 - **Noul:** the value is the probability of *yes*. Confidence, when you need one scale for everything, is `|2p − 1|`: 0.5 → 0, 0.9 → 0.8.
 - **Choice:** `confidence = (p_max − 1/n) / (1 − 1/n)`; `probabilities` shows the runner-up, which is what the ambiguity rule reads.
 - **Score:** `score` is a probability-weighted position on the levels; `confidence` falls faster when mass sits far from the modal level.
-- **Bands used by the plugin and the CLI:** act ≥ 0.75; confirm 0.45–0.75 (one more probe, or ask); escalate < 0.45 (treat as unknown or hand to the user).
+- **Bands used by the plugin and the CLI:** act ≥ 0.75; confirm 0.45–0.75 (one more probe, or ask); escalate < 0.45 (treat as unknown or hand to the user). The hooks apply the same rule to themselves: no `deny` or `block` ever rests on an answer in the escalate band, and `jev verify` prints the deciding Noul's confidence and band next to its verdict (an escalate-band verdict is reported as `insufficient`).
 
 ## Silencing and debugging
 

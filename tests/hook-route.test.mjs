@@ -79,7 +79,7 @@ describe('route block', () => {
     const text = context(r);
     assert.match(text, /^\[rea-jev System 1 route · jev-1\.13\.0-fake · \d+ ms\]/);
     assert.match(text, /target: native_binary \(0\.90\) → first tool: open_binary\(path\), then binary_overview \/ search_strings \/ trace_feature/);
-    assert.match(text, /workflow: investigate_feature \(0\.90\) · scope: 1 "one feature in one subsystem" · runtime needed: 0\.12 · build after: 0\.81/);
+    assert.match(text, /workflow: investigate_feature \(0\.90\) · scope: 1\.0 "one feature in one subsystem" · runtime needed: 0\.12 · build after: 0\.81/);
     assert.match(text, /hint: path \S+Sample\.app is a macOS app bundle/);
     assert.match(text, /Use the reverse-engineer skill\. Keep observations, inferences, and unknowns separate; cite Evidence IDs\.$/);
     assert.ok(text.split('\n').length <= 12, 'at most 12 lines');
@@ -97,8 +97,8 @@ describe('route block', () => {
     assert.equal(body.questions.scope.criteria.length, 4);
     assert.equal(body.questions.needs_runtime.type, 'noul');
     assert.equal(body.questions.wants_build.type, 'noul');
-    assert.deepEqual(Object.keys(body.state).sort(), ['active_target', 'cwd_basename', 'prompt', 'sniff_hints']);
-    assert.equal(body.state.cwd_basename, path.basename(ROOT));
+    assert.deepEqual(Object.keys(body.state).sort(), ['active_target', 'prompt', 'sniff_hints'], 'every state field is referenced by a question');
+    assert.ok(body.questions.target_kind.instructions.includes('`active_target`'));
     assert.equal(body.state.active_target, null);
     assert.ok(body.state.sniff_hints.some((h) => h.includes('Sample.app')));
 
@@ -108,7 +108,36 @@ describe('route block', () => {
     assert.equal(events[0].declared_target, SAMPLE_APP);
     assert.equal(events[0].target_hint, 'native_binary');
     assert.ok(events[0].prompt_excerpt.length <= 200);
+    assert.equal(events[0].prompt_for_jev, events[0].prompt_excerpt, 'a short prompt is kept whole in both fields');
+    assert.equal(events[0].decision, 'route');
     assert.equal(events[0].answers.target_kind.choice, 'native_binary');
+  });
+  test('the route event keeps a 1200-char redacted prompt for the later hooks, next to the 200-char ledger excerpt', async () => {
+    const session = newSession('route');
+    script({ is_re_task: 0.9, target_kind: 'native_binary' });
+    const deliverables = Array.from({ length: 12 }, (_, i) => `(${i + 1}) explain deliverable number ${i + 1} of the export feature in detail`).join('; ');
+    const prompt = `How does ./tests/fixtures/Sample.app export? ${deliverables}`;
+    assert.ok(prompt.length > 800 && prompt.length < 1200, `prompt is ${prompt.length} chars`);
+    await runHook('hook-route', rePrompt(session, { prompt }), env());
+    const [ev] = ledgerEvents(tmp, session);
+    assert.ok(ev.prompt_excerpt.length <= 230 && ev.prompt_excerpt.includes('chars omitted'));
+    assert.equal(ev.prompt_for_jev, prompt, 'the full request survives for the stop hook');
+  });
+  test('the scope shown is the expected level, the same quantity that triggers the fan-out line', async () => {
+    script({ is_re_task: 0.9, target_kind: 'native_binary', scope: { probabilities: [0, 0, 0.5, 0.5] } });
+    const r = await runHook('hook-route', rePrompt(newSession('route')), env());
+    assert.match(context(r), /scope: 2\.5 "several features or one cross-layer trace"/);
+    assert.match(context(r), /Consider fanning out/);
+    script({ is_re_task: 0.9, target_kind: 'native_binary', scope: { probabilities: [0, 0.2, 0.8, 0] } });
+    const r2 = await runHook('hook-route', rePrompt(newSession('route')), env());
+    assert.match(context(r2), /scope: 1\.8 "several features or one cross-layer trace"/);
+    assert.doesNotMatch(context(r2), /Consider fanning out/);
+  });
+  test('a non-first Choice option is honoured (the fake rejects unknown options)', async () => {
+    script({ is_re_task: 0.9, target_kind: 'managed_assembly', workflow: 'compare_versions' });
+    const r = await runHook('hook-route', rePrompt(newSession('route')), env());
+    assert.match(context(r), /target: managed_assembly \(0\.90\) → first tool: inspect_managed_artifact\(path\)/);
+    assert.match(context(r), /workflow: compare_versions \(0\.90\)/);
   });
   test('wide scope and runtime need add the fan-out and capture lines', async () => {
     script({ is_re_task: 0.9, target_kind: 'javascript_application', workflow: 'overview', scope: 3, needs_runtime: 0.9 });
@@ -177,7 +206,44 @@ describe('silence rules', () => {
   });
 });
 
+describe('egress', () => {
+  test('URL credentials and query strings never leave: not in the prompt, the hints, the target, nor the ledger', async () => {
+    const before = fake.requests.length;
+    const session = newSession('route');
+    script({ is_re_task: 0.9, target_kind: 'website_in_browser' });
+    const prompt = 'reverse engineer the login flow of the web app at https://admin:S3cretPass@10.0.0.7/portal?access_token=abcdef123456 and tell me how the session cookie is set';
+    const r = await runHook('hook-route', rePrompt(session, { prompt }), env());
+    assert.equal(r.code, 0, r.stderr);
+    const body = JSON.stringify(fake.requests[before].body);
+    assert.doesNotMatch(body, /S3cretPass|access_token=abcdef/);
+    assert.ok(body.includes('https://10.0.0.7/portal'), body);
+    const ledger = JSON.stringify(ledgerEvents(tmp, session));
+    assert.doesNotMatch(ledger, /S3cretPass|access_token=abcdef/);
+    assert.equal(ledgerEvents(tmp, session)[0].declared_target, 'https://10.0.0.7/portal');
+    assert.doesNotMatch(r.stdout, /S3cretPass|access_token=abcdef/);
+  });
+});
+
 describe('modes and fail-open', () => {
+  test('429 then 200 → the retry happens in the real hook process and the route block is emitted', async () => {
+    const s = await startFakeJev({ scenario: '429-then-200', script: { is_re_task: 0.9, target_kind: 'native_binary' } });
+    try {
+      const r = await runHook('hook-route', rePrompt(newSession('route')), env({ fakeUrl: s.url }));
+      assert.equal(r.code, 0, r.stderr);
+      assert.match(context(r) ?? '', /target: native_binary/);
+      assert.equal(s.requests.length, 2, 'the hook retried once after the 429');
+    } finally {
+      await s.close();
+    }
+  });
+  test('an out-of-range or malformed answer is dropped: the hook stays silent instead of routing on it', async () => {
+    const before = fake.requests.length;
+    script({ is_re_task: { raw: { type: 'noul', noul: 7 } }, target_kind: { raw: { type: 'choice', choice: '__proto__', probabilities: { native_binary: 0.9 } } } });
+    const r = await runHook('hook-route', rePrompt(newSession('route')), env());
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(r.stdout, '');
+    assert.equal(fake.requests.length, before + 1);
+  });
   test('shadow → nothing on stdout, Jev called, route event logged', async () => {
     const before = fake.requests.length;
     const session = newSession('route');

@@ -24,7 +24,7 @@ Keep the file under 2 MB and the request under roughly 24k tokens (about 96k cha
 
 ## 1. Rank a long inventory (`search_strings`, `list_procedures`, `list_names`, `xrefs`, `inspect_artifact`)
 
-`jev rank` splits the items into chunks of at most 200, asks one **Choice** per chunk ("Which item best matches the query?") plus one **Noul** `match_exists` ("Does any item match?"), merges chunks by probability, and prints `rank, p, id, preview`.
+`jev rank` splits the items into balanced chunks of at most 200 (equal sizes, so probabilities are comparable across chunks), asks one **Choice** per chunk ("Which item best matches the query?") plus one **Noul** `match_exists` ("Does any item match?"), merges chunks by probability, and prints `rank, p, id, preview`. At most 4 requests are in flight at once; if one chunk fails after the retry the output is marked `PARTIAL` and those items are simply unranked.
 
 ```bash
 : "${CLAUDE_PLUGIN_ROOT:?set CLAUDE_PLUGIN_ROOT to the rea-jev plugin directory}"
@@ -50,7 +50,7 @@ Read it: if `match_exists` is below 0.45, the list probably does not contain wha
 
 ## 2. Classify procedures or strings into roles
 
-`jev classify` asks one **Choice per item** (keys `item_<i>`), batched at 40 items per request, and prints label, probability, and confidence per item. Always include an `other` label so the model can say "none of these".
+`jev classify` asks one **Choice per item** (keys `item_<i>`), batched at 40 items per request, and prints label, probability, and confidence per item. Your instructions become each question ("<instructions> Judge `items.item_<i>` only; which label fits best?"); the state holds only the items. Always include an `other` label so the model can say "none of these"; when you forget, the CLI appends `other` itself and says so.
 
 ```bash
 : "${CLAUDE_PLUGIN_ROOT:?set CLAUDE_PLUGIN_ROOT to the rea-jev plugin directory}"
@@ -71,22 +71,23 @@ Then decompile only what the hypothesis needs: items labeled `storage` with p �
 
 ## 3. Verify a conclusion against pasted evidence
 
-`jev verify` asks four Nouls about your claim and the evidence text (≤ 20k chars): `supported`, `contradicted`, `needs_runtime`, `overstated`, and prints one verdict: `supported`, `contradicted`, `insufficient`, or `needs_runtime`.
+`jev verify` asks four Nouls about your claim and the evidence text (≤ 20k chars): `supported`, `contradicted`, `needs_runtime`, `overstated`, and prints one verdict: `supported`, `contradicted`, `insufficient`, or `needs_runtime`, followed by the deciding Noul's probability, confidence and band (`verdict: supported (decided by supported at p 0.900, confidence 0.800, band act)`). The deciding thresholds sit at 0.75; a deciding answer in the escalate band is reported as `insufficient` ("treat as unknown").
+
+Write the claim to a file (Write tool) and pass `--claim-file`. Claims quote strings from the analyzed program, and `$(…)`, backticks or quotes inside a `--claim "…"` argument would be interpreted by the shell.
 
 ```bash
 : "${CLAUDE_PLUGIN_ROOT:?set CLAUDE_PLUGIN_ROOT to the rea-jev plugin directory}"
 J="${TMPDIR:-/tmp}/rea-jev"
 
+# claim.txt   = one sentence, e.g. "Search results are filtered by an SQLite FTS table that -[NoteSearchIndex updateIndexForNote:] rebuilds on save"
 # evidence.txt = the pseudocode, strings, and xref lines the claim rests on, each prefixed with its ev_ ID
-node "${CLAUDE_PLUGIN_ROOT}/scripts/jev.mjs" verify \
-  --claim "Search results are filtered by an SQLite FTS table that -[NoteSearchIndex updateIndexForNote:] rebuilds on save" \
-  --evidence "$J/evidence.txt"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/jev.mjs" verify --claim-file "$J/claim.txt" --evidence "$J/evidence.txt"
 
-# from stdin
-cat "$J/evidence.txt" | node "${CLAUDE_PLUGIN_ROOT}/scripts/jev.mjs" verify --claim "..." --evidence -
+# evidence from stdin (the claim must then come from a file)
+cat "$J/evidence.txt" | node "${CLAUDE_PLUGIN_ROOT}/scripts/jev.mjs" verify --claim-file "$J/claim.txt" --evidence -
 ```
 
-Act on the verdict: `supported` (confidence ≥ 0.75) → write it as an inference citing the IDs; `supported` in the confirm band → write it as a hypothesis and name the probe that would settle it; `insufficient` → do not write it, probe more or mark unknown; `contradicted` → drop it or `record_unknown` with the contradicting IDs; `needs_runtime` → say "static evidence cannot establish this" or plan a declared capture. Run the `rea-verifier` agent for the same purpose when you want an adversarial read of several conclusions at once.
+Act on the verdict: `supported` in the act band (confidence ≥ 0.75) → write it as an inference citing the IDs; `supported` in the confirm band → write it as a hypothesis and name the probe that would settle it; `insufficient` → do not write it, probe more or mark unknown; `contradicted` → drop it or `record_unknown` with the contradicting IDs; `needs_runtime` → say "static evidence cannot establish this" or plan a declared capture. Run the `rea-verifier` agent for the same purpose when you want an adversarial read of several conclusions at once.
 
 ## 4. Write your own questions with `jev ask`
 

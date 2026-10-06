@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { sniffPrompt, magicOf, dirKind, isLoopback, extractEndpoints, KEYWORD_RE, describePath, targetKindFor } from '../scripts/lib/sniff.mjs';
+import { execFileSync } from 'node:child_process';
+import { sniffPrompt, magicOf, dirKind, isLoopback, extractEndpoints, safeUrl, KEYWORD_RE, describePath, targetKindFor } from '../scripts/lib/sniff.mjs';
 
 // All fixtures are built at runtime in a temp dir; nothing binary is committed.
 let dir;
@@ -172,10 +173,37 @@ describe('sniffPrompt', () => {
     assert.equal(s.pathTokens.length, 0, 'URL path segments must not become path tokens');
     assert.equal(s.declaredTarget, 'https://example.com/pricing');
   });
-  test('host:port shorthands become endpoints', () => {
+  test('host:port shorthands become endpoints; --inspect flags yield the HTTP form REA takes', () => {
     const e = extractEndpoints('chrome is at localhost:9222 and node at 127.0.0.1:9229, but mysql on db.internal:3306');
     assert.deepEqual(e.cdpEndpoints, ['localhost:9222']);
     assert.deepEqual(e.inspectorEndpoints, ['127.0.0.1:9229']);
+    assert.deepEqual(extractEndpoints('run it with --inspect-brk=9230').inspectorEndpoints, ['http://127.0.0.1:9230']);
+  });
+  test('URL credentials, query strings and fragments are stripped from urls, hints and the declared target', () => {
+    const s = sniffPrompt('look at https://admin:S3cretPass@10.0.0.7/portal?access_token=abcdef123456#frag please', dir);
+    assert.deepEqual(s.urls, ['https://10.0.0.7/portal']);
+    assert.equal(s.declaredTarget, 'https://10.0.0.7/portal');
+    assert.doesNotMatch(JSON.stringify(s), /S3cretPass|access_token/);
+    assert.equal(safeUrl('https://example.com'), 'https://example.com');
+    assert.equal(safeUrl('https://example.com/a/b/'), 'https://example.com/a/b/');
+    assert.equal(safeUrl('not a url token=abcdef'), 'not a url token=[REDACTED:kv]');
+  });
+  test('a FIFO mentioned in the prompt is stat-ed but never opened (no blocking read)', () => {
+    const fifo = path.join(dir, 'myfifo');
+    try {
+      execFileSync('mkfifo', [fifo]);
+    } catch {
+      return; // mkfifo unavailable on this host; nothing to test
+    }
+    const started = Date.now();
+    const t = describePath(fifo, dir);
+    assert.ok(Date.now() - started < 1000, 'returned without blocking');
+    assert.equal(t.exists, true);
+    assert.equal(t.isDir, false);
+    assert.equal(t.magic, null);
+    const s = sniffPrompt(`reverse engineer the binary at ${fifo} please`, dir);
+    assert.equal(s.pathTokens[0].abs, fifo);
+    assert.equal(describePath('/dev/null', dir).magic, null);
   });
   test('empty / non-string prompt → empty result', () => {
     const s = sniffPrompt(null);
@@ -222,12 +250,12 @@ describe('keyword pre-filter', () => {
 
 describe('isLoopback', () => {
   test('loopback forms', () => {
-    for (const e of ['ws://127.0.0.1:9222/x', 'http://localhost:9222/json', 'localhost:9229', '[::1]:9229', 'ws://[::1]:9229/abc', 'http://127.5.6.7:9222', 'http://app.localhost:9222', '0.0.0.0:9222']) {
+    for (const e of ['ws://127.0.0.1:9222/x', 'http://localhost:9222/json', 'localhost:9229', '[::1]:9229', 'ws://[::1]:9229/abc', 'http://127.5.6.7:9222', 'http://app.localhost:9222', '0.0.0.0:9222', 'http://[::ffff:127.0.0.1]:9222', 'http://[::ffff:7f00:1]:9222', '[::ffff:7f00:0001]:9222']) {
       assert.equal(isLoopback(e), true, e);
     }
   });
   test('remote and garbage forms', () => {
-    for (const e of ['http://10.0.0.5:9222/json', 'ws://192.168.1.20:9229/x', 'example.com:9222', 'http://127.0.0.1.evil.com:9222', '', null, 'not an endpoint at all', 42]) {
+    for (const e of ['http://10.0.0.5:9222/json', 'ws://192.168.1.20:9229/x', 'example.com:9222', 'http://127.0.0.1.evil.com:9222', 'http://127.0.0.1@evil.com:9222', 'http://localhost.evil.com:9222', 'http://127.0.0.1.nip.io:9222', 'http://[::]:9222', 'http://[::ffff:a00:1]:9222', '', null, 'not an endpoint at all', 42]) {
       assert.equal(isLoopback(e), false, String(e));
     }
   });

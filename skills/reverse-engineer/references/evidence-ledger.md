@@ -68,9 +68,9 @@ Finish every native investigation with `close_binary`. Pass `snapshot_path` to s
 
 The plugin keeps its own per-session JSONL at `$REA_JEV_HOME/sessions/<session_id>.jsonl` (`REA_JEV_HOME` defaults to `$CLAUDE_PLUGIN_DATA` when set, else `~/.rea-jev`). It stores four event kinds:
 
-- `route` — a ≤ 200-char redacted prompt excerpt, the route answers, the declared target path or URL;
+- `route` — a ≤ 200-char redacted prompt excerpt plus a ≤ 1200-char redacted copy of the prompt (what the later hooks send Jev as your request), the route answers, the declared target path or URL (credentials stripped), the decision;
 - `pre` — tool, `sha256` of tool + canonical input, a ≤ 200-char input excerpt, the gate decision and its source (local or Jev);
-- `post` — tool, input hash, ok flag, Evidence IDs, limitations (≤ 120 chars each), byte count, evidence answers, notes among `low_relevance`, `unknown_candidate`, `agent_directed_text`, `claims_runtime`;
+- `post` — tool, input hash, ok flag, Evidence IDs (at most 64, plus the count), limitations (≤ 120 chars each, from REA's envelope only), byte count, evidence answers, notes among `low_relevance`, `unknown_candidate`, `agent_directed_text`, `claims_runtime`;
 - `stop` — decision (`allow`, `block`, `shadow_block`), answers, reason.
 
 It never stores full tool inputs or outputs, only hashes, IDs, and short redacted excerpts. It exists so the gate can deny an identical repeated call, the evidence hook can count what you have seen, and the Stop hook can compare your final message with the IDs that were returned. It is **not** a substitute for REA's Evidence bundle, which holds the complete canonical records: cite from REA results, export with `export_evidence_bundle`, and treat the plugin ledger as bookkeeping. With `REA_JEV_LOG=1`, every Jev decision also goes to `$REA_JEV_HOME/decisions.jsonl` for `jev stats`.

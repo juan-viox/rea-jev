@@ -16,6 +16,8 @@ import {
   estimateTokens,
   topChoices,
   validateQuestions,
+  sanitizeAnswers,
+  isDecisive,
 } from '../scripts/lib/jev.mjs';
 import { startFakeJev, FAKE_HEADER } from './fake-jev.mjs';
 
@@ -190,6 +192,41 @@ describe('askJev', () => {
     assert.equal(r.reason, 'network');
   });
 
+  test('answers are validated against the questions: out-of-range or foreign values are dropped, all-invalid → bad_json', async () => {
+    const s = await fake({
+      script: {
+        ok: 0.3,
+        bad: { raw: { type: 'noul', noul: 7 } },
+        proto: { raw: { type: 'choice', choice: '__proto__', probabilities: { a: 0.5, b: 0.5 } } },
+        far: { raw: { type: 'score', score: 9, probabilities: { 0: 0.5, 1: 0.5 } } },
+        dirty: { raw: { type: 'choice', choice: 'a', confidence: 4, probabilities: { a: 0.9, b: 2, zzz: 0.1 } } },
+      },
+    });
+    const questions = {
+      ok: noul('Is it?'),
+      bad: noul('Is it?'),
+      proto: choice('Which?', { a: null, b: null }),
+      far: score('How?', ['lo', 'hi']),
+      dirty: choice('Which?', { a: null, b: null }),
+    };
+    const r = await askJev({ state: 'x', questions, env: envFor(s) });
+    assert.equal(r.ok, true);
+    assert.deepEqual(Object.keys(r.answers).sort(), ['dirty', 'ok']);
+    assert.deepEqual(r.dropped.sort(), ['bad', 'far', 'proto']);
+    assert.deepEqual(r.answers.dirty, { type: 'choice', choice: 'a', probabilities: { a: 0.9 } }, 'bad probabilities and confidence are removed');
+    const all = await askJev({ state: 'x', questions: { bad: noul('Is it?') }, env: envFor(s) });
+    assert.equal(all.ok, false);
+    assert.equal(all.reason, 'bad_json');
+  });
+  test('sanitizeAnswers (in-process) and isDecisive', () => {
+    const { answers, dropped } = sanitizeAnswers({ a: { type: 'noul', noul: -0.1 }, b: { type: 'noul', noul: 1 }, extra: { type: 'noul', noul: 0.5 } }, { a: noul('?'), b: noul('?') });
+    assert.deepEqual(answers, { b: { type: 'noul', noul: 1 } });
+    assert.deepEqual(dropped, ['a']);
+    assert.equal(isDecisive({ type: 'noul', noul: 0.29 }), false, 'confidence 0.42 is the escalate band');
+    assert.equal(isDecisive({ type: 'noul', noul: 0.2 }), true);
+    assert.equal(isDecisive({ type: 'noul', noul: 0.73 }), true);
+    assert.equal(isDecisive(null), false);
+  });
   test('local validation → invalid without a request', async () => {
     const s = await fake();
     const tooMany = Object.fromEntries(Array.from({ length: 256 }, (_, i) => [`o${i}`, null]));

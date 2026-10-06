@@ -151,10 +151,10 @@ describe('enforce', () => {
     assert.deepEqual(Object.keys(body.questions).sort(), ['cites_evidence', 'claims_complete', 'outcome', 'separates_epistemics', 'unaddressed_question']);
     assert.equal(body.questions.outcome.type, 'choice');
     assert.deepEqual(Object.keys(body.questions.outcome.criteria), ['complete', 'partial_with_open_questions', 'blocked', 'not_an_investigation']);
-    assert.deepEqual(Object.keys(body.state).sort(), ['facts', 'final_message', 'user_request']);
+    assert.deepEqual(Object.keys(body.state).sort(), ['final_message', 'user_request'], 'facts stay local; every state field is referenced by a question');
     assert.equal(body.state.final_message, msg);
     assert.match(body.state.user_request, /^How does the export feature/);
-    assert.deepEqual(body.state.facts, {
+    assert.deepEqual(lastStop(session).facts, {
       open_session_not_closed: false,
       evidence_ids_seen: 2,
       evidence_ids_cited: 1,
@@ -163,6 +163,65 @@ describe('enforce', () => {
       tool_calls: 4,
     });
     assert.equal(lastStop(session).decision, 'allow');
+  });
+  test('a message that cites the returned Evidence IDs is never told it does not cite them, whatever the Noul says', async () => {
+    const session = newSession('stop');
+    seedLedger(tmp, session, activity([CLOSED]));
+    script({ ...CAREFUL, cites_evidence: 0.1 });
+    const msg = `Done. ExportWriter (${EV('a')}) writes the file; the PDF path is ${EV('b')}. Observed vs inferred vs unknown are marked above.`;
+    const r = await runHook('hook-stop', payload('stop-complete.json', { session_id: session, last_assistant_message: msg }), env());
+    assert.equal(r.stdout, '', 'evidence_ids_cited is 2, so the citation item cannot fire');
+    assert.equal(lastStop(session).facts.evidence_ids_cited, 2);
+    assert.equal(lastStop(session).decision, 'allow');
+  });
+  test('cites_evidence at p 0.29 (confidence 0.42, escalate) is not decisive: the item is dropped', async () => {
+    const session = newSession('stop');
+    seedLedger(tmp, session, activity([CLOSED]));
+    script({ ...CAREFUL, cites_evidence: 0.29 });
+    const r = await runHook('hook-stop', payload('stop-complete.json', { session_id: session }), env());
+    assert.equal(r.stdout, '');
+    assert.equal(lastStop(session).decision, 'allow');
+    script({ ...CAREFUL, cites_evidence: 0.2 });
+    const s2 = newSession('stop');
+    seedLedger(tmp, s2, activity([CLOSED]));
+    const r2 = await runHook('hook-stop', payload('stop-complete.json', { session_id: s2 }), env());
+    assert.equal(r2.json?.decision, 'block', 'p 0.20 (confidence 0.60) is decisive');
+  });
+  test('claims_complete at p 0.72 (escalate band) degrades an enforce block to a systemMessage', async () => {
+    const session = newSession('stop');
+    seedLedger(tmp, session, activity());
+    script({ ...CARELESS, claims_complete: 0.72 });
+    const r = await runHook('hook-stop', payload('stop-complete.json', { session_id: session }), env());
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(r.json.decision, undefined);
+    assert.match(r.json.systemMessage, /^rea-jev would have asked for: rea-jev: the investigation reports completion \(0\.72\)/);
+    assert.equal(lastStop(session).decision, 'shadow_block');
+  });
+  test('user_request is the last reverse-engineering request, not a later follow-up prompt', async () => {
+    const before = fake.requests.length;
+    const session = newSession('stop');
+    seedLedger(tmp, session, activity([
+      CLOSED,
+      { kind: 'route', prompt_excerpt: 'thanks, format that as a table', prompt_for_jev: 'thanks, format that as a table', answers: { is_re_task: { type: 'noul', noul: 0.05 } }, declared_target: SAMPLE_APP, decision: 'silent' },
+    ]));
+    script(CAREFUL);
+    await runHook('hook-stop', payload('stop-complete.json', { session_id: session }), env());
+    assert.match(fake.requests[before].body.state.user_request, /^How does the export feature/);
+  });
+  test('an out-of-range answer is dropped and the hook stays silent (fail open on a malformed provider)', async () => {
+    const session = newSession('stop');
+    seedLedger(tmp, session, activity());
+    script({ ...CARELESS, claims_complete: { raw: { type: 'noul', noul: 7 } }, cites_evidence: { raw: { type: 'noul', noul: -2 } } });
+    const r = await runHook('hook-stop', payload('stop-complete.json', { session_id: session }), env());
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(r.stdout, '');
+  });
+  test('a non-first outcome option is honoured: partial_with_open_questions still blocks a careless message', async () => {
+    const session = newSession('stop');
+    seedLedger(tmp, session, activity());
+    script({ ...CARELESS, outcome: 'partial_with_open_questions' });
+    const r = await runHook('hook-stop', payload('stop-complete.json', { session_id: session }), env());
+    assert.equal(r.json?.decision, 'block');
   });
   test('only the triggered items are listed: open session alone', async () => {
     const session = newSession('stop');

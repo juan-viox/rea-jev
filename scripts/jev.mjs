@@ -5,13 +5,15 @@
  *   jev ask --state <file|-|json> --questions <json|file>
  *   jev rank "<query>" --items <file|-> [--top 15] [--id-field id --text-field text]
  *   jev classify --items <file|-> --labels a,b,c[,other] --instructions "<q>"
- *   jev verify --claim "<text>" --evidence <file|->
+ *   jev verify (--claim "<text>" | --claim-file <file|->) --evidence <file|->
  *   jev doctor [--offline]
  *   jev stats [--days 7]
  *
- * `--json` for machine output. Exit 0 on answers, 1 on usage error, 2 on
+ * `--json` for machine output. Exit 0 on answers (also partial answers when
+ * some rank/classify chunks failed; see `partial`), 1 on usage error, 2 on
  * provider failure. Secrets are redacted before anything is sent; item files
- * larger than 2 MB are refused unless `--force`.
+ * larger than 2 MB are refused unless `--force`. Chunked commands send at
+ * most `MAX_CONCURRENCY` requests at a time.
  *
  * @module jev-cli
  */
@@ -33,7 +35,7 @@ import {
   topChoices,
   REQUEST_TOKEN_BUDGET,
 } from './lib/jev.mjs';
-import { redact, truncate } from './lib/redact.mjs';
+import { redact, redactObject, truncate } from './lib/redact.mjs';
 import { mode } from './lib/hookio.mjs';
 import { ledgerDir, decisionsPath, readDecisions, logDecision, ensureDir } from './lib/ledger.mjs';
 import { reaPin, loadCatalog, CATALOG_PATH } from './lib/rea.mjs';
@@ -51,8 +53,18 @@ export const CLASSIFY_BATCH = 40;
 export const VERIFY_MAX_CHARS = 20000;
 /** Items files above this size need `--force`. */
 export const ITEMS_MAX_BYTES = 2 * 1024 * 1024;
-/** `verify` verdict thresholds on the four Nouls. */
-export const VERIFY_THRESHOLDS = Object.freeze({ contradicted: 0.6, supported: 0.7, needs_runtime: 0.7, overstated: 0.6 });
+/**
+ * `verify`: verdict thresholds on the four Nouls. The deciding Nouls sit at
+ * 0.75 (confidence 0.5, the `confirm` band): a verdict is never categorical
+ * on a near-coin-flip, and a deciding answer in the `escalate` band downgrades
+ * the verdict to `insufficient`. `overstated` is a veto on `supported`.
+ */
+export const VERIFY_THRESHOLDS = Object.freeze({ contradicted: 0.75, supported: 0.75, needs_runtime: 0.75, overstated: 0.6 });
+/** Chunked commands (`rank`, `classify`): requests in flight at once. */
+export const MAX_CONCURRENCY = 4;
+/** `classify`: label added when the set has no "none of these" option. */
+export const OTHER_LABEL = 'other';
+const OTHER_LIKE_RE = /^(?:other|others|none|none_of_these|neither|unknown|n\/a)$/i;
 
 const ITEM_TEXT_MAX = 400;
 const PREVIEW_MAX = 72;
@@ -65,7 +77,7 @@ Usage:
   jev ask --state <file|-|json> --questions <json|file>
   jev rank "<query>" --items <file|-> [--top 15] [--id-field id] [--text-field text]
   jev classify --items <file|-> --labels a,b,c[,other] --instructions "<question>"
-  jev verify --claim "<text>" --evidence <file|->
+  jev verify (--claim "<text>" | --claim-file <file|->) --evidence <file|->
   jev doctor [--offline]
   jev stats [--days 7]
 
@@ -78,7 +90,10 @@ Options:
 
 Items may be a JSON array, JSON lines, or plain lines. Objects use --id-field /
 --text-field (defaults: id, text; falls back to common REA field names).
-Exit codes: 0 answers · 1 usage error · 2 provider failure (no key, timeout, HTTP error).
+Prefer --claim-file when the claim quotes strings from the analyzed program, so
+nothing from a tool result is interpolated into a shell command line.
+Exit codes: 0 answers (partial when some chunks failed; see "partial") · 1 usage error ·
+2 provider failure (no key, timeout, HTTP error).
 Keys: TYPESAFE_API_KEY (preferred) or OPENROUTER_API_KEY; JEV_BASE_URL to override the endpoint.
 `;
 
@@ -98,6 +113,7 @@ const OPTIONS = {
   labels: { type: 'string' },
   instructions: { type: 'string' },
   claim: { type: 'string' },
+  'claim-file': { type: 'string' },
   evidence: { type: 'string' },
   days: { type: 'string' },
 };
@@ -182,8 +198,8 @@ async function cmdAsk(ctx) {
   const { opts } = ctx;
   if (opts.state == null) throw new UsageError('ask needs --state <file|-|json>');
   if (opts.questions == null) throw new UsageError('ask needs --questions <json|file>');
-  const state = redactValue(readStateArg(opts.state));
-  const questions = redactValue(readJsonArg(opts.questions, '--questions'));
+  const state = redactObject(readStateArg(opts.state));
+  const questions = redactObject(readJsonArg(opts.questions, '--questions'));
   if (!isPlainObject(questions) || Object.keys(questions).length === 0) throw new UsageError('--questions must be a non-empty JSON object');
 
   const res = await askOrThrow(ctx, state, questions);
@@ -213,7 +229,10 @@ async function cmdRank(ctx) {
   const { items } = loadItems(opts.items, ctx);
   if (items.length === 0) throw new UsageError('no items found in --items');
 
-  const chunks = chunkItems(items, RANK_CHUNK, 300 + estimateTokens(query), 2);
+  // Balanced chunks (sizes differ by at most one) keep `p_in_chunk` comparable
+  // across chunks: a Choice spreads its mass over the chunk's own options, so
+  // a small final chunk would otherwise inflate its items.
+  const chunks = balancedChunks(items, RANK_CHUNK, 300 + estimateTokens(query), 2);
   const cleanQuery = redact(String(query));
   const requests = chunks.map((chunk) => {
     const criteria = Object.fromEntries(chunk.map((it) => [it.id, it.text]));
@@ -231,12 +250,17 @@ async function cmdRank(ctx) {
   });
 
   const started = Date.now();
-  const results = await Promise.all(requests.map((r) => askOrThrow(ctx, r.state, r.questions)));
+  const { results, failed } = await askChunks(ctx, requests);
   const latency = Date.now() - started;
 
   const scored = [];
+  let unranked = 0;
   let matchMax = 0;
   results.forEach((res, ci) => {
+    if (!res) {
+      unranked += chunks[ci].length;
+      return;
+    }
     const best = res.answers.best;
     const me = typeof res.answers.match_exists?.noul === 'number' ? res.answers.match_exists.noul : 1;
     matchMax = Math.max(matchMax, me);
@@ -247,7 +271,8 @@ async function cmdRank(ctx) {
   });
   scored.sort((a, b) => b.p - a.p || b.p_in_chunk - a.p_in_chunk || a.chunk - b.chunk);
   const ranked = scored.slice(0, top).map((s, i) => ({ rank: i + 1, ...s }));
-  const usage = sumUsage(results);
+  const okResults = results.filter(Boolean);
+  const usage = sumUsage(okResults);
 
   const payload = {
     ok: true,
@@ -255,19 +280,21 @@ async function cmdRank(ctx) {
     query: cleanQuery,
     items_total: items.length,
     chunks: chunks.length,
-    requests: results.length,
+    requests: requests.length,
     match_exists: round6(matchMax),
     top,
     items: ranked,
-    provider: results[0].provider,
-    model: results[0].model,
+    ...(failed.length && { partial: true, failed_chunks: failed.length, unranked_items: unranked, failures: failed.map((f) => failurePayload(f.result)) }),
+    provider: okResults[0].provider,
+    model: okResults[0].model,
     latency_ms: latency,
     usage,
     cost_usd: round6(estimateCost(usage)),
   };
   log(ctx, payload, { items: items.length });
   const rows = ranked.map((r) => `${String(r.rank).padStart(4)}  ${fmtP(r.p)}  ${r.id.slice(0, 24).padEnd(24)}  ${preview(r.text)}`);
-  payload.human = `rank  p      ${'id'.padEnd(24)}  preview\n${rows.join('\n')}\nmatch_exists ${fmtP(matchMax)} (max over ${chunks.length} chunk${chunks.length === 1 ? '' : 's'}) · ${items.length} items in ${results.length} request${results.length === 1 ? '' : 's'} · ${footerParts(results[0], usage, latency)}\n`;
+  const partialNote = failed.length ? `\nPARTIAL: ${failed.length} of ${requests.length} request${requests.length === 1 ? '' : 's'} failed (${describeFailure(failed[0].result)}); ${unranked} item${unranked === 1 ? '' : 's'} unranked` : '';
+  payload.human = `rank  p      ${'id'.padEnd(24)}  preview\n${rows.join('\n')}\nmatch_exists ${fmtP(matchMax)} (max over ${chunks.length} chunk${chunks.length === 1 ? '' : 's'}) · ${items.length} items in ${requests.length} request${requests.length === 1 ? '' : 's'} · ${footerParts(okResults[0], usage, latency)}${partialNote}\n`;
   return payload;
 }
 
@@ -280,29 +307,37 @@ async function cmdClassify(ctx) {
   const { items } = loadItems(opts.items, ctx);
   if (items.length === 0) throw new UsageError('no items found in --items');
 
+  // The judgment lives in the question, the content in the state: each Choice
+  // carries the user's instructions and names the one item it is about. A
+  // label set without a "none of these" option gets `other` so the model is
+  // never forced to pick a wrong label.
   const instructions = redact(String(opts.instructions).trim());
+  const addedOther = !Object.keys(labels).some((l) => OTHER_LIKE_RE.test(l));
+  if (addedOther) labels[OTHER_LABEL] = 'None of the listed labels fits';
   const indexed = items.map((it, gi) => ({ ...it, key: `item_${gi}` }));
-  const batches = chunkItems(indexed, CLASSIFY_BATCH, 300 + estimateTokens(instructions) + estimateTokens(labels), 1, 40);
+  const perQuestion = estimateTokens(instructions) + estimateTokens(labels) + 12;
+  const batches = chunkItems(indexed, CLASSIFY_BATCH, 300, 1, perQuestion);
   const requests = batches.map((batch) => ({
-    state: { instructions, items: Object.fromEntries(batch.map((it) => [it.key, it.text])) },
-    questions: Object.fromEntries(batch.map((it) => [it.key, choice(`Answer \`instructions\` for \`items.${it.key}\` only: which label fits best?`, labels)])),
+    state: { items: Object.fromEntries(batch.map((it) => [it.key, it.text])) },
+    questions: Object.fromEntries(batch.map((it) => [it.key, choice(`${instructions} Judge \`items.${it.key}\` only; which label fits best?`, labels)])),
   }));
 
   const started = Date.now();
-  const results = await Promise.all(requests.map((r) => askOrThrow(ctx, r.state, r.questions)));
+  const { results, failed } = await askChunks(ctx, requests);
   const latency = Date.now() - started;
 
   const out = [];
   batches.forEach((batch, bi) => {
     for (const it of batch) {
-      const a = results[bi].answers[it.key];
+      const a = results[bi]?.answers[it.key];
       const label = typeof a?.choice === 'string' ? a.choice : null;
       const p = label ? Number(a.probabilities?.[label]) || 0 : 0;
       const conf = confidenceOf(a);
       out.push({ id: it.id, text: it.text, label, p: round6(p), confidence: round6(conf), band: band(conf), probabilities: a?.probabilities ?? {} });
     }
   });
-  const usage = sumUsage(results);
+  const okResults = results.filter(Boolean);
+  const usage = sumUsage(okResults);
   const counts = {};
   for (const o of out) counts[o.label ?? 'null'] = (counts[o.label ?? 'null'] ?? 0) + 1;
 
@@ -310,28 +345,43 @@ async function cmdClassify(ctx) {
     ok: true,
     command: 'classify',
     labels: Object.keys(labels),
+    ...(addedOther && { added_label: OTHER_LABEL }),
     items_total: items.length,
     batches: batches.length,
-    requests: results.length,
+    requests: requests.length,
     counts,
     items: out,
-    provider: results[0].provider,
-    model: results[0].model,
+    ...(failed.length && { partial: true, failed_batches: failed.length, unlabeled_items: out.filter((o) => o.label === null).length, failures: failed.map((f) => failurePayload(f.result)) }),
+    provider: okResults[0].provider,
+    model: okResults[0].model,
     latency_ms: latency,
     usage,
     cost_usd: round6(estimateCost(usage)),
   };
   log(ctx, payload, { items: items.length });
   const rows = out.map((o) => `${o.id.slice(0, 20).padEnd(20)}  ${String(o.label).padEnd(14)}  ${fmtP(o.p)}  ${fmtP(o.confidence)}  ${o.band.padEnd(8)}  ${preview(o.text, 48)}`);
-  payload.human = `${'id'.padEnd(20)}  ${'label'.padEnd(14)}  p      conf   band      preview\n${rows.join('\n')}\n${Object.entries(counts).map(([k, v]) => `${k}: ${v}`).join(' · ')} · ${items.length} items in ${results.length} request${results.length === 1 ? '' : 's'} · ${footerParts(results[0], usage, latency)}\n`;
+  const notes = [];
+  if (addedOther) notes.push(`note: added label "${OTHER_LABEL}" (None of the listed labels fits) so the model can decline every listed label`);
+  if (failed.length) notes.push(`PARTIAL: ${failed.length} of ${requests.length} request${requests.length === 1 ? '' : 's'} failed (${describeFailure(failed[0].result)}); unlabeled items have label null`);
+  payload.human = `${'id'.padEnd(20)}  ${'label'.padEnd(14)}  p      conf   band      preview\n${rows.join('\n')}\n${Object.entries(counts).map(([k, v]) => `${k}: ${v}`).join(' · ')} · ${items.length} items in ${requests.length} request${requests.length === 1 ? '' : 's'} · ${footerParts(okResults[0], usage, latency)}${notes.length ? `\n${notes.join('\n')}` : ''}\n`;
   return payload;
 }
 
 async function cmdVerify(ctx) {
   const { opts } = ctx;
-  if (!opts.claim || !String(opts.claim).trim()) throw new UsageError('verify needs --claim "<text>"');
+  const claimFile = opts['claim-file'];
+  if (claimFile != null && opts.claim != null) throw new UsageError('verify takes --claim or --claim-file, not both');
+  if (claimFile === '-' && opts.evidence === '-') throw new UsageError('only one of --claim-file and --evidence can read stdin');
+  let rawClaim;
+  if (claimFile != null) {
+    rawClaim = readSource(claimFile);
+    if (rawClaim == null) throw new UsageError(`claim file not found: ${claimFile}`);
+  } else {
+    rawClaim = opts.claim;
+  }
+  if (!rawClaim || !String(rawClaim).trim()) throw new UsageError('verify needs --claim "<text>" or --claim-file <file|->');
   if (opts.evidence == null) throw new UsageError('verify needs --evidence <file|->');
-  const claim = redact(String(opts.claim).trim());
+  const claim = redact(String(rawClaim).trim());
   const rawEvidence = readSource(opts.evidence) ?? String(opts.evidence);
   const redacted = redact(rawEvidence);
   const evidenceTruncated = redacted.length > VERIFY_MAX_CHARS;
@@ -351,11 +401,16 @@ async function cmdVerify(ctx) {
   };
   const res = await askOrThrow(ctx, { claim, evidence }, questions);
   const answers = decorateAnswers(res.answers);
-  const verdict = verdictOf(res.answers);
+  const v = verdictOf(res.answers);
+  const verdict = v.verdict;
   const payload = {
     ok: true,
     command: 'verify',
     verdict,
+    verdict_confidence: round6(v.confidence),
+    verdict_band: v.band,
+    decided_by: v.decidedBy,
+    ...(v.downgradedFrom && { downgraded_from: v.downgradedFrom }),
     claim,
     evidence_chars: evidence.length,
     evidence_truncated: evidenceTruncated,
@@ -369,7 +424,10 @@ async function cmdVerify(ctx) {
   };
   log(ctx, payload, { verdict });
   const p = (k) => fmtP(res.answers[k]?.noul ?? 0);
-  payload.human = `verdict: ${verdict}\n  supported ${p('supported')} · contradicted ${p('contradicted')} · needs_runtime ${p('needs_runtime')} · overstated ${p('overstated')}\n  ${verdictRationale(verdict)}${evidenceTruncated ? `\n  note: evidence truncated to ${VERIFY_MAX_CHARS} chars` : ''}\n${footer(res, 1)}\n`;
+  const headline = v.downgradedFrom
+    ? `verdict: ${verdict} (${v.downgradedFrom} at p ${p(v.downgradedFrom)} has confidence ${fmtP(v.confidence)}, band ${v.band}; treat as unknown)`
+    : `verdict: ${verdict} (decided by ${v.decidedBy} at p ${p(v.decidedBy)}, confidence ${fmtP(v.confidence)}, band ${v.band})`;
+  payload.human = `${headline}\n  supported ${p('supported')} · contradicted ${p('contradicted')} · needs_runtime ${p('needs_runtime')} · overstated ${p('overstated')}\n  ${verdictRationale(verdict, v.band)}${evidenceTruncated ? `\n  note: evidence truncated to ${VERIFY_MAX_CHARS} chars` : ''}\n${footer(res, 1)}\n`;
   return payload;
 }
 
@@ -493,6 +551,42 @@ async function askOrThrow(ctx, state, questions) {
   return res;
 }
 
+/**
+ * Send chunked requests, at most `MAX_CONCURRENCY` in flight. A chunk that
+ * fails (after the client's own retry) yields `null` in `results` and an
+ * entry in `failed`; the command degrades to a partial answer. When every
+ * chunk failed the first failure is thrown as a ProviderError (exit 2).
+ *
+ * @param {object} ctx
+ * @param {Array<{state: unknown, questions: object}>} requests
+ * @returns {Promise<{results: Array<object|null>, failed: Array<{index: number, result: object}>}>}
+ */
+async function askChunks(ctx, requests) {
+  const results = new Array(requests.length).fill(null);
+  const failed = [];
+  await mapLimit(requests, MAX_CONCURRENCY, async (r, i) => {
+    const res = await askJev({ state: r.state, questions: r.questions, timeoutMs: ctx.timeoutMs, env: ctx.env });
+    if (res.ok) results[i] = res;
+    else failed.push({ index: i, result: res });
+  });
+  failed.sort((a, b) => a.index - b.index);
+  if (failed.length === requests.length) throw new ProviderError(failed[0].result);
+  return { results, failed };
+}
+
+async function mapLimit(list, limit, fn) {
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, list.length) }, async () => {
+    for (;;) {
+      const i = next;
+      next += 1;
+      if (i >= list.length) return;
+      await fn(list[i], i);
+    }
+  });
+  await Promise.all(workers);
+}
+
 function decorateAnswers(answers) {
   const out = {};
   for (const [key, a] of Object.entries(answers ?? {})) {
@@ -520,23 +614,38 @@ function describeAnswer(a) {
   return `${a.type ?? '?'}  ${tail}`;
 }
 
-function verdictOf(answers) {
+/**
+ * Map the four Nouls to a verdict. The deciding Noul's confidence and band are
+ * returned with it; a deciding answer in the `escalate` band downgrades the
+ * verdict to `insufficient` (`downgradedFrom` names what it would have been).
+ *
+ * @param {Record<string, any>} answers
+ * @returns {{verdict: string, decidedBy: string, confidence: number, band: string, downgradedFrom?: string}}
+ */
+export function verdictOf(answers) {
   const p = (k) => (typeof answers[k]?.noul === 'number' ? answers[k].noul : 0);
   const t = VERIFY_THRESHOLDS;
-  if (p('contradicted') >= t.contradicted) return 'contradicted';
-  if (p('needs_runtime') >= t.needs_runtime && p('supported') < t.supported) return 'needs_runtime';
-  if (p('supported') >= t.supported && p('overstated') < t.overstated) return 'supported';
-  return 'insufficient';
+  let verdict = 'insufficient';
+  let decidedBy = 'supported';
+  if (p('contradicted') >= t.contradicted) [verdict, decidedBy] = ['contradicted', 'contradicted'];
+  else if (p('needs_runtime') >= t.needs_runtime && p('supported') < t.supported) [verdict, decidedBy] = ['needs_runtime', 'needs_runtime'];
+  else if (p('supported') >= t.supported && p('overstated') < t.overstated) [verdict, decidedBy] = ['supported', 'supported'];
+  const confidence = confidenceOf(answers[decidedBy]);
+  const b = band(confidence);
+  if (verdict !== 'insufficient' && b === 'escalate') return { verdict: 'insufficient', decidedBy, confidence, band: b, downgradedFrom: verdict };
+  return { verdict, decidedBy, confidence, band: b };
 }
 
-function verdictRationale(v) {
+function verdictRationale(v, b) {
   switch (v) {
     case 'contradicted':
       return 'the evidence conflicts with the claim; revise or drop it.';
     case 'needs_runtime':
       return 'static evidence cannot establish this; phrase it as an inference or capture runtime evidence.';
     case 'supported':
-      return 'the evidence establishes the claim as stated; cite the Evidence IDs behind it.';
+      return b === 'act'
+        ? 'the evidence establishes the claim as stated; write it as an inference and cite the Evidence IDs behind it.'
+        : 'the evidence supports the claim but only in the confirm band; write it as a hypothesis and name the probe that would settle it.';
     default:
       return 'the evidence does not establish the claim (or the claim overstates it); narrow the claim or gather more evidence.';
   }
@@ -706,6 +815,35 @@ export function normalizeItems(raw, idField = 'id', textField = 'text') {
   return out;
 }
 
+/**
+ * Split items into chunks of (nearly) equal size, each within `maxCount` and
+ * the request token budget. Starts from the greedy chunk count and adds
+ * chunks until every one fits. Exported for tests.
+ *
+ * @param {Array<{id: string, text: string}>} items
+ * @param {number} maxCount
+ * @param {number} overheadTokens
+ * @param {number} textFactor
+ * @param {number} [perItemTokens]
+ * @returns {Array<Array<{id: string, text: string}>>}
+ */
+export function balancedChunks(items, maxCount, overheadTokens, textFactor, perItemTokens = 4) {
+  const tokensOf = (chunk) => overheadTokens + chunk.reduce((sum, it) => sum + estimateTokens(it.id + it.text) * textFactor + perItemTokens, 0);
+  const greedy = chunkItems(items, maxCount, overheadTokens, textFactor, perItemTokens);
+  for (let k = greedy.length; k <= items.length; k += 1) {
+    const base = Math.floor(items.length / k);
+    const extra = items.length % k;
+    const chunks = [];
+    for (let i = 0, pos = 0; i < k; i += 1) {
+      const size = base + (i < extra ? 1 : 0);
+      chunks.push(items.slice(pos, pos + size));
+      pos += size;
+    }
+    if (chunks.every((c) => c.length <= maxCount && tokensOf(c) <= REQUEST_TOKEN_BUDGET)) return chunks;
+  }
+  return greedy;
+}
+
 function chunkItems(items, maxCount, overheadTokens, textFactor, perItemTokens = 4) {
   const chunks = [];
   let cur = [];
@@ -784,17 +922,6 @@ function statSafe(p) {
     return fs.statSync(p, { throwIfNoEntry: false }) ?? null;
   } catch {
     return null;
-  }
-}
-
-function redactValue(value) {
-  if (typeof value === 'string') return redact(value);
-  if (value == null || typeof value !== 'object') return value;
-  const text = redact(JSON.stringify(value));
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
   }
 }
 

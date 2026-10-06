@@ -16,7 +16,6 @@
  * @module hook-route
  */
 
-import path from 'node:path';
 import { readStdinJson, emitAndExit, exitSilently, mode, threshold, debug } from './lib/hookio.mjs';
 import { askJev, confidenceOf, topChoices, noul, choice, score, resolveTimeoutMs } from './lib/jev.mjs';
 import { excerpt } from './lib/redact.mjs';
@@ -26,8 +25,12 @@ import { sniffPrompt } from './lib/sniff.mjs';
 
 /** Hard ceiling for the whole hook, under the 10 s hooks.json timeout. */
 const SAFETY_MS = 9000;
+/** Jev gets at most this much of the budget, so it always returns before the safety timer. */
+const JEV_MAX_MS = SAFETY_MS - 3500;
 /** Prompt characters sent to Jev. */
 const PROMPT_MAX = 3000;
+/** Redacted prompt kept in the route event for the gate, evidence and stop hooks (`prompt_for_jev`). */
+const PROMPT_FOR_JEV_MAX = 1200;
 /** Lines of `hint:` included in the route block. */
 const MAX_HINT_LINES = 3;
 
@@ -53,7 +56,7 @@ function routeQuestions() {
         false: 'Ordinary coding, repository, or conversational request',
       },
     ),
-    target_kind: choice('Which kind of artifact should be inspected first, using `prompt` and `sniff_hints`?', {
+    target_kind: choice('Which kind of artifact should be inspected first, using `prompt`, `sniff_hints`, and `active_target` (the artifact already under investigation in this session, or null)?', {
       native_binary: 'Mach-O/ELF/PE executable or library, macOS .app bundle, Hopper .hop database',
       javascript_application: 'Electron app, .asar archive, extracted or minified JavaScript bundle, source maps',
       managed_assembly: '.NET PE/CLI .dll or .exe',
@@ -137,11 +140,13 @@ function decideRoute(answers, ctx) {
   const wf = a.workflow ?? {};
   const wfP = probabilityOf(wf, wf.choice);
   const scopeLevel = modeLevel(a.scope);
+  // One quantity drives both the printed scope and the fan-out rule: the
+  // expected level (`score`), shown with the modal level's label.
   const scopeValue = typeof a.scope?.score === 'number' ? a.scope.score : scopeLevel;
   const needsRuntime = num(a.needs_runtime?.noul, 0);
   const wantsBuild = num(a.wants_build?.noul, 0);
   const workflowLine =
-    `workflow: ${wf.choice ?? 'unknown'} (${fmt(wfP)}) · scope: ${scopeLevel} "${SCOPE_SHORT[scopeLevel] ?? 'unknown'}"` +
+    `workflow: ${wf.choice ?? 'unknown'} (${fmt(wfP)}) · scope: ${scopeValue.toFixed(1)} "${SCOPE_SHORT[scopeLevel] ?? 'unknown'}"` +
     ` · runtime needed: ${fmt(needsRuntime)} · build after: ${fmt(wantsBuild)}`;
   const footer = 'Use the reverse-engineer skill. Keep observations, inferences, and unknowns separate; cite Evidence IDs.';
 
@@ -194,13 +199,14 @@ async function main() {
     return exitSilently(0);
   }
 
+  // Every field is redacted: the prompt through excerpt(), hints and the
+  // active target by the sniffer (URL credentials and query strings stripped).
   const state = {
     prompt: excerpt(prompt, PROMPT_MAX),
-    sniff_hints: sniff.hints.slice(0, 8),
-    cwd_basename: path.basename(cwd),
-    active_target: summary.declaredTarget,
+    sniff_hints: sniff.hints.slice(0, 8).map((h) => excerpt(h, 300)),
+    active_target: summary.declaredTarget ? excerpt(summary.declaredTarget, 300) : null,
   };
-  const result = await askJev({ state, questions: routeQuestions(), timeoutMs: resolveTimeoutMs() });
+  const result = await askJev({ state, questions: routeQuestions(), timeoutMs: Math.min(resolveTimeoutMs(), JEV_MAX_MS) });
 
   // Carry the previous declared target through non-RE prompts; adopt a new one for RE prompts
   // and when Jev could not say (the sniffed target is deterministic and the gate needs it).
@@ -212,6 +218,7 @@ async function main() {
     appendEvent(sessionId, {
       kind: 'route',
       prompt_excerpt: excerpt(prompt, 200),
+      prompt_for_jev: excerpt(prompt, PROMPT_FOR_JEV_MAX),
       answers: null,
       target_hint: sniff.hints[0] ?? null,
       declared_target: declaredTarget,
@@ -225,6 +232,7 @@ async function main() {
   appendEvent(sessionId, {
     kind: 'route',
     prompt_excerpt: excerpt(prompt, 200),
+    prompt_for_jev: excerpt(prompt, PROMPT_FOR_JEV_MAX),
     answers: result.answers,
     target_hint: result.answers.target_kind?.choice ?? null,
     declared_target: declaredTarget,

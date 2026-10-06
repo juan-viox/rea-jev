@@ -64,7 +64,9 @@ When something is missing, do what can be done and name the gap under
   `node "${CLAUDE_PLUGIN_ROOT}/scripts/jev.mjs" classify --items <file> --labels parser,network,storage,ui,crypto,other --instructions "<role question>"`,
   then probe only the top hits.
 - Before writing a conclusion, run
-  `node "${CLAUDE_PLUGIN_ROOT}/scripts/jev.mjs" verify --claim "<claim>" --evidence <file>`
+  `node "${CLAUDE_PLUGIN_ROOT}/scripts/jev.mjs" verify --claim-file <claim-file> --evidence <file>`
+  (write the claim to a file; strings quoted from the artifact must never be
+  interpolated into a shell command line)
   on the evidence text behind it. Downgrade to an inference, or move it to
   Unknowns, when the verdict is `insufficient` or `needs_runtime`. If the command
   exits 2 (System 1 unavailable), say so and keep the claim as an inference.
