@@ -31,7 +31,8 @@ Conventions:
 
 | Name | Default | Override | Used by |
 |---|---|---|---|
-| `T_ROUTE_RE` | 0.35 | `REA_JEV_T_ROUTE_RE` | Route: minimum `is_re_task` to say anything |
+| `T_ROUTE_RE` | 0.35 | `REA_JEV_T_ROUTE_RE` | Route: minimum `is_re_task` to say anything when the prompt carries its own signal (keyword, existing path, or endpoint) |
+| `T_ROUTE_RE_FOLLOWUP` | 0.5 | `REA_JEV_T_ROUTE_RE_FOLLOWUP` | Route: minimum `is_re_task` when the prompt reached Jev only because the ledger shows REA activity |
 | `T_ROUTE_MIN` | 0.5 | `REA_JEV_T_ROUTE_MIN` | Route: minimum `target_kind` confidence to name a target |
 | `T_GATE_SCOPE` | 0.3 | `REA_JEV_T_GATE_SCOPE` | Gate: `within_scope` below this denies (enforce) or asks (advise) |
 | `T_GATE_IRREV` | 0.8 | `REA_JEV_T_GATE_IRREV` | Gate: `irreversible` above this asks |
@@ -63,7 +64,7 @@ endpoint is present, or the ledger shows REA activity in this session.
 
 | Key | Type | Instructions | Criteria |
 |---|---|---|---|
-| `is_re_task` | noul | Does `prompt` ask to understand, inspect, decompile, trace, compare, or recreate the behavior of software from a shipped artifact, a running application, or a website rather than from source code the user already has? | true: names an app, binary, package, bundle, page, or runtime to inspect, or asks how a feature works without source; false: ordinary coding, repository, or conversational request |
+| `is_re_task` | noul | Judging `prompt` alone (ignore `active_target`): does it ask to understand, inspect, decompile, trace, compare, or recreate the behavior of software from a shipped artifact, a running application, or a website rather than from source code the user already has? | true: names an app, binary, package, bundle, page, or runtime to inspect, asks how a feature works without source, or continues such an investigation with a new question about the artifact; false: ordinary coding, repository, or conversational request, including fixing or changing the user's own code or tooling, running tests, merging, or formatting, even while an investigation is active |
 | `target_kind` | choice | Which kind of artifact should be inspected first, using `prompt`, `sniff_hints`, and `active_target` (the artifact already under investigation in this session, or null)? | `native_binary`: Mach-O/ELF/PE executable or library, macOS .app bundle, Hopper .hop database · `javascript_application`: Electron app, .asar archive, extracted or minified JavaScript bundle, source maps · `managed_assembly`: .NET PE/CLI .dll or .exe · `android_apk`: Android .apk package · `package_archive`: .zip, .ipa, .dmg, .msix, .appx or other container that must be inventoried before choosing a deeper tool · `website_in_browser`: a web page or site, or a Chrome DevTools endpoint · `electron_or_node_runtime`: a running Electron or Node process exposing an inspector endpoint · `source_repository`: ordinary source code the user already has; REA is not needed · `unknown_or_missing`: no concrete artifact is named or it cannot be told apart from the text |
 | `workflow` | choice | Which investigation outcome does `prompt` ask for? | `investigate_feature`: explain how one feature or behavior works · `compare_versions`: find what changed between two builds or versions · `verify_reconstruction`: check a rebuilt or ported implementation against the original · `trace_crash_or_bug`: find the code path behind a crash, error, or suspicious behavior · `audit_unknowns`: review and resolve open questions from an earlier investigation · `capture_runtime_behavior`: observe or record the program while it runs · `build_from_findings`: recreate the feature in the user's own project · `overview`: map or summarize an app without a specific feature in mind · `other`: none of these |
 | `scope` | score | How broad is the investigation `prompt` asks for? | 0: one function, string, symbol, or file · 1: one feature inside one subsystem of one app · 2: several features, or one feature traced across layers of one app · 3: several apps or versions, or a map of an entire application |
@@ -73,7 +74,12 @@ endpoint is present, or the ledger shows REA activity in this session.
 **Policy:**
 
 - `is_re_task < T_ROUTE_RE` → silent. Also silent when `target_kind` is
-  `source_repository` with confidence ≥ 0.6.
+  `source_repository` with confidence ≥ 0.6. A prompt with no keyword,
+  existing path, or endpoint of its own, which reached Jev only because the
+  ledger shows REA activity, must clear `T_ROUTE_RE_FOLLOWUP` instead: an
+  `active_target` pulls `is_re_task` up for unrelated follow-ups such as
+  "fix the warning" (0.55 with a target, 0.06 without, measured on
+  jev-1.13).
 - `target_kind` confidence `< T_ROUTE_MIN`, or the choice is
   `unknown_or_missing` → inject: the route is ambiguous; ask the user which
   artifact before opening anything; list the top two candidates with their
@@ -174,7 +180,14 @@ launches a process and its name starts with `capture_` or `observe_`;
    plus `evidence_count`; limitations read from REA's envelope positions only;
    bytes; ok). Track `open_binary` and `close_binary`. An absent or empty
    `tool_response` is recorded as `ok: false` (`error: "empty tool_response"`)
-   so the gate never treats it as a reusable result. A payload over the 32 MB
+   so the gate never treats it as a reusable result. When Claude Code replaced
+   the result with its own size notice ("Output has been saved to <file>"),
+   the saved file is read back and judged in the notice's place, only from
+   `~/.claude/projects/<project>/tool-results/mcp-*.txt`, only up to 64 MB, and
+   only when it parses as an REA envelope (`oversize_notice: true, recovered:
+   true`); otherwise the post is recorded with `recovered: false` and Jev is
+   skipped. The notice itself is text addressed to an assistant and never
+   reaches Jev. A payload over the 32 MB
    stdin cap is recorded from its salvaged prefix as an oversize post and skips
    Jev. The base event is written even when the safety timer pre-empts Jev.
 2. Skip Jev when: mode `off`; the tool is `status`- or `mutation`-class (except

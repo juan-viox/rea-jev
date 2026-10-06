@@ -396,7 +396,7 @@ the ledger shows REA activity in this session.
 
 | key | type | instructions | criteria |
 |---|---|---|---|
-| `is_re_task` | noul | "Does `prompt` ask to understand, inspect, decompile, trace, compare, or recreate the behavior of software from a shipped artifact, a running application, or a website rather than from source code the user already has?" | true: "Names an app, binary, package, bundle, page, or runtime to inspect, or asks how a feature works without source"; false: "Ordinary coding, repository, or conversational request" |
+| `is_re_task` | noul | "Judging `prompt` alone (ignore `active_target`): does it ask to understand, inspect, decompile, trace, compare, or recreate the behavior of software from a shipped artifact, a running application, or a website rather than from source code the user already has?" | true: "Names an app, binary, package, bundle, page, or runtime to inspect, asks how a feature works without source, or continues such an investigation with a new question about the artifact"; false: "Ordinary coding, repository, or conversational request, including fixing or changing the user's own code or tooling, running tests, merging, or formatting, even while an investigation is active" |
 | `target_kind` | choice | "Which kind of artifact should be inspected first, using `prompt`, `sniff_hints`, and `active_target` (the artifact already under investigation in this session, or null)?" | `native_binary`: "Mach-O/ELF/PE executable or library, macOS .app bundle, Hopper .hop database"; `javascript_application`: "Electron app, .asar archive, extracted or minified JavaScript bundle, source maps"; `managed_assembly`: ".NET PE/CLI .dll or .exe"; `android_apk`: "Android .apk package"; `package_archive`: ".zip, .ipa, .dmg, .msix, .appx or other container that must be inventoried before choosing a deeper tool"; `website_in_browser`: "A web page or site, or a Chrome DevTools endpoint"; `electron_or_node_runtime`: "A running Electron or Node process exposing an inspector endpoint"; `source_repository`: "Ordinary source code the user already has; REA is not needed"; `unknown_or_missing`: "No concrete artifact is named or it cannot be told apart from the text" |
 | `workflow` | choice | "Which investigation outcome does `prompt` ask for?" | `investigate_feature`: "Explain how one feature or behavior works"; `compare_versions`: "Find what changed between two builds or versions"; `verify_reconstruction`: "Check a rebuilt or ported implementation against the original"; `trace_crash_or_bug`: "Find the code path behind a crash, error, or suspicious behavior"; `audit_unknowns`: "Review and resolve open questions from an earlier investigation"; `capture_runtime_behavior`: "Observe or record the program while it runs"; `build_from_findings`: "Recreate the feature in the user's own project"; `overview`: "Map or summarize an app without a specific feature in mind"; `other`: "None of these" |
 | `scope` | score | "How broad is the investigation `prompt` asks for?" | ["One function, string, symbol, or file", "One feature inside one subsystem of one app", "Several features, or one feature traced across layers of one app", "Several apps or versions, or a map of an entire application"] |
@@ -404,7 +404,7 @@ the ledger shows REA activity in this session.
 | `wants_build` | noul | "Does `prompt` ask to build, port, or recreate the feature in the user's own project after it is understood?" | — |
 
 **Policy:**
-- `is_re_task < T_ROUTE_RE (0.35)` → silent (and when `target_kind == source_repository` with confidence ≥ 0.6 → silent).
+- `is_re_task < T_ROUTE_RE (0.35)` → silent (and when `target_kind == source_repository` with confidence ≥ 0.6 → silent). When the pre-filter held only because the ledger shows REA activity (the prompt has no keyword, existing path, or endpoint of its own), the bar is `T_ROUTE_RE_FOLLOWUP (0.5)` instead: an `active_target` pulls `is_re_task` up for unrelated follow-ups ("fix the warning" measured 0.55 with a target and 0.06 without), and the same bar decides whether the sniffed target replaces the declared one.
 - `target_kind` confidence `< T_ROUTE_MIN (0.5)` or choice `unknown_or_missing` → inject: route is ambiguous; ask the user which artifact before opening anything; list the top two candidates with probabilities.
 - Otherwise inject a compact route block (≤ 12 lines):
 
@@ -465,7 +465,13 @@ call (`decision: silent`, `reason: timeout`).
 1. Parse with `parseReaResult`; append `post` to the ledger (ids ≤ 64 plus
    `evidence_count`, limitations, bytes, ok). Track `open_binary`/`close_binary`.
    An absent or empty `tool_response` is `ok: false` with `error: "empty tool_response"`
-   (nothing to reuse). A payload over the 32 MB stdin cap is recorded from its
+   (nothing to reuse). When the host replaced the result with its own size
+   notice ("Output has been saved to <file>"), the saved file is read back
+   and judged in the notice's place, but only from the host's own
+   `~/.claude/projects/<project>/tool-results/mcp-*.txt`, only up to 64 MB, and
+   only when it parses as an REA envelope; the notice itself (instructions to
+   an assistant) never reaches Jev, and an unrecoverable notice is recorded
+   (`oversize_notice: true, recovered: false`) and skips Jev. A payload over the 32 MB stdin cap is recorded from its
    salvaged prefix as `{ ok: true, bytes: <total>, truncated: true, oversize: true }`
    and skips Jev. The base event is also written when the safety timer pre-empts Jev.
 2. Skip Jev when: mode `off`; tool is `status`- or `mutation`-class (except

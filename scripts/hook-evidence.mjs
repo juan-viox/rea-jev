@@ -8,7 +8,11 @@
  *    runs in every mode. An absent or empty `tool_response` is recorded as
  *    `ok: false` so the gate never treats it as a reusable result; a payload
  *    over the stdin cap is recorded from its salvaged prefix as an oversize
- *    post and skips Jev.
+ *    post and skips Jev. When Claude Code replaced the result with its own
+ *    size notice ("Output has been saved to <file>"), the saved file is read
+ *    back (only from Claude Code's tool-results directory, only when it is an
+ *    REA envelope) and judged in its place; the notice itself, which is
+ *    instructions to an assistant, never reaches Jev.
  * 2. Skip Jev when mode is off, the tool is status- or mutation-class
  *    (`open_binary` is still scanned locally for limitations), the result text
  *    is under 400 chars, or the result is an error.
@@ -22,11 +26,14 @@
  * @module hook-evidence
  */
 
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { readStdinJson, emitAndExit, exitSilently, mode, threshold, debug } from './lib/hookio.mjs';
 import { askJev, confidenceOf, noul, score, resolveTimeoutMs } from './lib/jev.mjs';
 import { excerpt, redact, truncate } from './lib/redact.mjs';
 import { appendEvent, readEvents, summarize, logDecision } from './lib/ledger.mjs';
-import { isReaTool, bareToolName, effectClass, hashInput, canonicalJson, parseReaResult, isStaticTool } from './lib/rea.mjs';
+import { isReaTool, bareToolName, effectClass, hashInput, canonicalJson, parseReaResult, isStaticTool, harnessOversizeNotice } from './lib/rea.mjs';
 
 /** Hard ceiling for the whole hook, under the 15 s hooks.json timeout. */
 const SAFETY_MS = 14000;
@@ -36,6 +43,8 @@ const JEV_MAX_MS = SAFETY_MS - 3500;
 const STDIN_MAX = 32 * 1024 * 1024;
 /** Results shorter than this never reach Jev. */
 const MIN_RESULT_CHARS = 400;
+/** A saved result larger than this is not read back. */
+const SAVED_RESULT_MAX = 64 * 1024 * 1024;
 const QUESTION_MAX = 600;
 const RESULT_MAX = 6000;
 const RESULT_HEAD = 4500;
@@ -97,7 +106,11 @@ async function main() {
   const effect = effectClass(tool);
   const sessionId = String(input.session_id ?? 'unknown');
   const oversize = typeof input.__oversize_bytes__ === 'number' ? input.__oversize_bytes__ : 0;
-  const parsed = parseReaResult(input.tool_response);
+  const received = parseReaResult(input.tool_response);
+  // The host's size notice stands in for the result; judge the saved result.
+  const notice = received.json === null ? harnessOversizeNotice(received.text) : null;
+  const recovered = notice ? recoverSavedResult(notice.path) : null;
+  const parsed = recovered ?? received;
   if (parsed.empty && !oversize) parsed.error = 'empty tool_response';
   const ok = parsed.error === null;
   const limitations = parsed.limitations.map((l) => truncate(redact(l), LIMITATION_MAX)).slice(0, 40);
@@ -116,9 +129,14 @@ async function main() {
     ...(parsed.error && { error: excerpt(parsed.error, 200) }),
     ...((parsed.truncated || oversize) && { truncated: true }),
     ...(oversize && { oversize: true }),
+    ...(notice && { oversize_notice: true, recovered: Boolean(recovered) }),
   };
 
-  const skip = oversize ? `payload over ${STDIN_MAX} bytes (recorded from its prefix)` : skipReason({ m, effect, tool, ok, chars: parsed.text.length });
+  const skip = oversize
+    ? `payload over ${STDIN_MAX} bytes (recorded from its prefix)`
+    : notice && !recovered
+      ? 'host size notice; the saved result could not be read back'
+      : skipReason({ m, effect, tool, ok, chars: parsed.text.length });
   if (skip) {
     appendEvent(sessionId, event);
     debug(`evidence: ${tool} recorded (${parsed.evidenceIds.length} ids, ${limitations.length} limitations); jev skipped: ${skip}`);
@@ -165,6 +183,36 @@ async function main() {
 
   if (m === 'shadow' || verdict.messages.length === 0) return exitSilently(0);
   return emitAndExit({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: verdict.messages.join('\n') } });
+}
+
+/**
+ * Read back a result that Claude Code saved to a file because it was too
+ * large for the context. Only a regular file under Claude Code's own
+ * `~/.claude/projects/<project>/tool-results/mcp-<tool>.txt` is accepted, only up to
+ * SAVED_RESULT_MAX bytes, and only when it parses as an REA envelope; the
+ * path comes from tool-result text, so anything else is refused.
+ *
+ * @param {string} filePath
+ * @returns {ReturnType<typeof parseReaResult>|null}
+ */
+function recoverSavedResult(filePath) {
+  try {
+    if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) return null;
+    const resolved = path.resolve(filePath);
+    const root = path.join(os.homedir(), '.claude', 'projects') + path.sep;
+    if (!resolved.startsWith(root)) return null;
+    if (!resolved.includes(`${path.sep}tool-results${path.sep}`)) return null;
+    if (!/^mcp-[\w.-]+\.txt$/.test(path.basename(resolved))) return null;
+    const st = fs.statSync(resolved);
+    if (!st.isFile() || st.size === 0 || st.size > SAVED_RESULT_MAX) return null;
+    const parsed = parseReaResult(fs.readFileSync(resolved, 'utf8'));
+    const json = parsed.json;
+    if (!json || typeof json !== 'object' || Array.isArray(json)) return null;
+    if (!('evidence_id' in json) && !('result' in json)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 /**

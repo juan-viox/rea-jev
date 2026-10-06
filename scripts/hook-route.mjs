@@ -8,7 +8,11 @@
  * 2. One Jev call with six questions (is_re_task, target_kind, workflow, scope,
  *    needs_runtime, wants_build).
  * 3. Policy: not an RE task → silent; ambiguous target → ask the user which
- *    artifact; otherwise inject a compact route block (≤ 12 lines).
+ *    artifact; otherwise inject a compact route block (≤ 12 lines). A prompt
+ *    that reached Jev only because the ledger shows earlier REA activity (no
+ *    keyword, path, or endpoint of its own) must clear the higher
+ *    T_ROUTE_RE_FOLLOWUP bar: an active target pulls `is_re_task` up for
+ *    unrelated follow-ups such as "fix the warning" or "merge it".
  * 4. Ledger: a `route` event with `declared_target`.
  *
  * Fails open: any error, timeout, or Jev failure → exit 0, empty stdout.
@@ -50,10 +54,10 @@ const SCOPE_SHORT = Object.freeze([
 function routeQuestions() {
   return {
     is_re_task: noul(
-      'Does `prompt` ask to understand, inspect, decompile, trace, compare, or recreate the behavior of software from a shipped artifact, a running application, or a website rather than from source code the user already has?',
+      'Judging `prompt` alone (ignore `active_target`): does it ask to understand, inspect, decompile, trace, compare, or recreate the behavior of software from a shipped artifact, a running application, or a website rather than from source code the user already has?',
       {
-        true: 'Names an app, binary, package, bundle, page, or runtime to inspect, or asks how a feature works without source',
-        false: 'Ordinary coding, repository, or conversational request',
+        true: 'Names an app, binary, package, bundle, page, or runtime to inspect, asks how a feature works without source, or continues such an investigation with a new question about the artifact',
+        false: "Ordinary coding, repository, or conversational request, including fixing or changing the user's own code or tooling, running tests, merging, or formatting, even while an investigation is active",
       },
     ),
     target_kind: choice('Which kind of artifact should be inspected first, using `prompt`, `sniff_hints`, and `active_target` (the artifact already under investigation in this session, or null)?', {
@@ -99,26 +103,45 @@ function routeQuestions() {
  * @returns {boolean}
  */
 function prefilterHolds(sniff, summary) {
+  return intrinsicSignal(sniff) || Boolean(summary.hasReaActivity);
+}
+
+/**
+ * True when the prompt itself carries a reverse-engineering signal (keyword,
+ * existing path, or endpoint), as opposed to reaching Jev only because the
+ * session already has REA activity.
+ *
+ * @param {import('./lib/sniff.mjs').Sniff} sniff
+ * @returns {boolean}
+ */
+function intrinsicSignal(sniff) {
   return Boolean(
-    sniff.keywordHit ||
-      sniff.pathTokens.some((t) => t.exists) ||
-      sniff.urls.length ||
-      sniff.cdpEndpoints.length ||
-      sniff.inspectorEndpoints.length ||
-      summary.hasReaActivity,
+    sniff.keywordHit || sniff.pathTokens.some((t) => t.exists) || sniff.urls.length || sniff.cdpEndpoints.length || sniff.inspectorEndpoints.length,
   );
+}
+
+/**
+ * The minimum `is_re_task` for this prompt: T_ROUTE_RE when the prompt has a
+ * signal of its own, T_ROUTE_RE_FOLLOWUP when only the ledger brought it here.
+ *
+ * @param {boolean} followUpOnly
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {number}
+ */
+function reBar(followUpOnly, env = process.env) {
+  return followUpOnly ? threshold('ROUTE_RE_FOLLOWUP', 0.5, env) : threshold('ROUTE_RE', 0.35, env);
 }
 
 /**
  * Apply the §5.1 policy to a set of answers.
  *
  * @param {Record<string, any>} answers
- * @param {{sniff: import('./lib/sniff.mjs').Sniff, model: string, latencyMs: number, env?: NodeJS.ProcessEnv}} ctx
+ * @param {{sniff: import('./lib/sniff.mjs').Sniff, model: string, latencyMs: number, followUpOnly?: boolean, env?: NodeJS.ProcessEnv}} ctx
  * @returns {{decision: 'silent'|'ambiguous'|'route', text: string|null, confidences: Record<string, number>}}
  */
 function decideRoute(answers, ctx) {
   const env = ctx.env ?? process.env;
-  const tRe = threshold('ROUTE_RE', 0.35, env);
+  const tRe = reBar(Boolean(ctx.followUpOnly), env);
   const tMin = threshold('ROUTE_MIN', 0.5, env);
   const a = answers ?? {};
   const pRe = num(a.is_re_task?.noul, 0);
@@ -210,7 +233,8 @@ async function main() {
 
   // Carry the previous declared target through non-RE prompts; adopt a new one for RE prompts
   // and when Jev could not say (the sniffed target is deterministic and the gate needs it).
-  const isRe = !result.ok || num(result.answers.is_re_task?.noul, 0) >= threshold('ROUTE_RE', 0.35);
+  const followUpOnly = !intrinsicSignal(sniff);
+  const isRe = !result.ok || num(result.answers.is_re_task?.noul, 0) >= reBar(followUpOnly);
   const declaredTarget = isRe ? sniff.declaredTarget ?? summary.declaredTarget : summary.declaredTarget;
 
   if (!result.ok) {
@@ -228,7 +252,7 @@ async function main() {
     return exitSilently(0);
   }
 
-  const verdict = decideRoute(result.answers, { sniff, model: result.model, latencyMs: result.latencyMs });
+  const verdict = decideRoute(result.answers, { sniff, model: result.model, latencyMs: result.latencyMs, followUpOnly });
   appendEvent(sessionId, {
     kind: 'route',
     prompt_excerpt: excerpt(prompt, 200),

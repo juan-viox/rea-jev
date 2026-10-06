@@ -269,6 +269,25 @@ export function hashInput(toolName, toolInput) {
  * @param {unknown} toolResponse
  * @returns {{text: string, json: unknown|null, evidenceIds: string[], evidenceCount: number, limitations: string[], unknowns: string[], truncated: boolean, error: string|null, bytes: number, empty: boolean}}
  */
+/**
+ * Claude Code replaces a tool result that is too large for the context with a
+ * notice of the form "Error: result (N characters) exceeds maximum allowed
+ * tokens. Output has been saved to <path>." followed by instructions to the
+ * assistant on how to read that file. Hooks receive the notice, not the
+ * result. Returns the character count and the saved path, or null.
+ *
+ * @param {unknown} text
+ * @returns {{chars: number, path: string}|null}
+ */
+export function harnessOversizeNotice(text) {
+  if (typeof text !== 'string') return null;
+  const m = OVERSIZE_NOTICE_RE.exec(text.trimStart());
+  if (!m) return null;
+  return { chars: Number(m[1].replace(/,/g, '')) || 0, path: m[2] };
+}
+
+const OVERSIZE_NOTICE_RE = /^Error: result \(([\d,]+) characters\) exceeds maximum allowed tokens\. Output has been saved to (\S+?)\.?(?:\s|$)/;
+
 export function parseReaResult(toolResponse) {
   const out = { text: '', json: null, evidenceIds: [], evidenceCount: 0, limitations: [], unknowns: [], truncated: false, error: null, bytes: 0, empty: false };
   if (toolResponse == null) {

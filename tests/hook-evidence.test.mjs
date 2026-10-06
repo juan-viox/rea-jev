@@ -8,8 +8,9 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
 import { startFakeJev } from './fake-jev.mjs';
-import { parseReaResult, EVIDENCE_IDS_MAX } from '../scripts/lib/rea.mjs';
+import { parseReaResult, EVIDENCE_IDS_MAX, harnessOversizeNotice } from '../scripts/lib/rea.mjs';
 import { ROOT, SAMPLE_APP, hookEnv, payload, newSession, runHook, seedLedger, ledgerEvents, makeTmp } from './hook-harness.mjs';
 
 let tmp;
@@ -401,5 +402,85 @@ describe('modes and fail-open', () => {
     const r = await runHook('hook-evidence', '{"tool_name":', env());
     assert.equal(r.code, 0);
     assert.equal(r.stdout, '');
+  });
+});
+
+describe('host size notice (result saved to a file)', () => {
+  // Claude Code replaces an oversized result with this notice; the hook must
+  // judge the saved file, never the notice (which is text aimed at an assistant).
+  const NOTICE_TAIL =
+    '\nFormat: JSON with schema: {result: {...}, evidence_id: string}\nUse jq to make structured queries.\nREQUIREMENTS FOR SUMMARIZATION/ANALYSIS/REVIEW:\n- You MUST read the content from the file in sequential chunks until 100% of the content has been read.';
+  const notice = (p, chars = 924671) => `Error: result (${chars.toLocaleString('en-US')} characters) exceeds maximum allowed tokens. Output has been saved to ${p}.${NOTICE_TAIL}`;
+  const savedDir = (home) => path.join(home, '.claude', 'projects', '-home-user', 'tool-results');
+  const asNotice = (name, text) => payload(name, { tool_response: { content: [{ type: 'text', text }] } });
+
+  test('harnessOversizeNotice parses the host notice and nothing else (in-process)', () => {
+    const n = harnessOversizeNotice(notice('/root/.claude/projects/x/tool-results/mcp-plugin_rea-jev_rea-inspect_web_page-1.txt'));
+    assert.deepEqual(n, { chars: 924671, path: '/root/.claude/projects/x/tool-results/mcp-plugin_rea-jev_rea-inspect_web_page-1.txt' });
+    assert.equal(harnessOversizeNotice('{"result":{}}'), null);
+    assert.equal(harnessOversizeNotice('Error: result exceeds something else'), null);
+    assert.equal(harnessOversizeNotice(null), null);
+  });
+  test('the saved REA result is read back: its Evidence ID lands in the ledger, Jev judges the result, and the notice never reaches Jev', async () => {
+    const home = makeTmp('evidence-home');
+    try {
+      const dir = savedDir(home);
+      fs.mkdirSync(dir, { recursive: true });
+      const original = payload('post-search-strings.json');
+      const text = original.tool_response.content[0].text;
+      const file = path.join(dir, 'mcp-plugin_rea-jev_rea-search_strings-1791317651284.txt');
+      fs.writeFileSync(file, text);
+      const before = fake.requests.length;
+      const session = newSession('evidence');
+      seedLedger(tmp, session, [routeEvent]);
+      script(QUIET);
+      const r = await runHook('hook-evidence', { ...asNotice('post-search-strings.json', notice(file)), session_id: session }, env({ extra: { HOME: home } }));
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(r.stdout, '', 'quiet answers, no warning');
+      assert.equal(fake.requests.length, before + 1, 'Jev was asked about the recovered result');
+      const body = fake.requests[before].body;
+      assert.ok(body.state.result_excerpt.includes('ExportDocumentCommand'), 'the excerpt is the saved result');
+      assert.doesNotMatch(body.state.result_excerpt, /REQUIREMENTS FOR SUMMARIZATION|exceeds maximum allowed tokens/);
+      const post = lastPost(session);
+      assert.equal(post.ok, true);
+      assert.equal(post.oversize_notice, true);
+      assert.equal(post.recovered, true);
+      assert.equal(post.evidence_ids[0], JSON.parse(text).evidence_id);
+      assert.equal(post.bytes, Buffer.byteLength(text, 'utf8'));
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+  test('a notice whose file is missing, outside the tool-results directory, or not an REA envelope is recorded without a Jev call', async () => {
+    const home = makeTmp('evidence-home');
+    try {
+      const dir = savedDir(home);
+      fs.mkdirSync(dir, { recursive: true });
+      const outside = path.join(home, 'secret.txt');
+      fs.writeFileSync(outside, JSON.stringify({ result: { x: 'y'.repeat(500) }, evidence_id: `ev_${'d'.repeat(64)}` }));
+      const notEnvelope = path.join(dir, 'mcp-plugin_rea-jev_rea-list_strings-2.txt');
+      fs.writeFileSync(notEnvelope, 'just some text, not JSON '.repeat(40));
+      const cases = [
+        ['missing file', path.join(dir, 'mcp-plugin_rea-jev_rea-search_strings-9.txt')],
+        ['outside the tool-results directory', outside],
+        ['not an REA envelope', notEnvelope],
+      ];
+      for (const [label, file] of cases) {
+        const before = fake.requests.length;
+        const session = newSession('evidence');
+        seedLedger(tmp, session, [routeEvent]);
+        script({ ...QUIET, agent_directed_text: 0.95 });
+        const r = await runHook('hook-evidence', { ...asNotice('post-search-strings.json', notice(file)), session_id: session }, env({ extra: { HOME: home } }));
+        assert.equal(r.code, 0, `${label}: ${r.stderr}`);
+        assert.equal(r.stdout, '', `${label}: no warning, the notice is not judged`);
+        assert.equal(fake.requests.length, before, `${label}: no Jev call`);
+        const post = lastPost(session);
+        assert.equal(post.oversize_notice, true, label);
+        assert.equal(post.recovered, false, label);
+        assert.deepEqual(post.evidence_ids, [], label);
+      }
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 });

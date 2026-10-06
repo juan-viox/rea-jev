@@ -293,3 +293,55 @@ describe('modes and fail-open', () => {
     assert.doesNotMatch(r.stderr, /test-key-not-real/);
   });
 });
+
+describe('follow-up bar', () => {
+  // A prompt with no keyword, path, or endpoint reaches Jev only because the
+  // ledger shows REA activity. An active target pulls is_re_task up for such
+  // prompts ("fix the warning" measured 0.55 with a target, 0.06 without), so
+  // they must clear T_ROUTE_RE_FOLLOWUP (0.5) rather than T_ROUTE_RE (0.35).
+  const seeded = (session) =>
+    seedLedger(tmp, session, [
+      { kind: 'route', prompt_excerpt: 'first', answers: {}, declared_target: SAMPLE_APP },
+      { kind: 'post', tool: 'open_binary', input_hash: 'sha256:x', ok: true, evidence_ids: [], limitations: [], bytes: 10 },
+    ]);
+  test('is_re_task 0.45 on a keyword-free follow-up → silent, target carried', async () => {
+    const session = newSession('route');
+    seeded(session);
+    script({ is_re_task: 0.45, target_kind: 'native_binary', workflow: 'trace_crash_or_bug' });
+    const r = await runHook('hook-route', rePrompt(session, { prompt: 'fix the false positive warning' }), env());
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(r.stdout, '');
+    const last = ledgerEvents(tmp, session).at(-1);
+    assert.equal(last.kind, 'route');
+    assert.equal(last.decision, 'silent');
+    assert.equal(last.declared_target, SAMPLE_APP);
+  });
+  test('is_re_task 0.7 on a keyword-free follow-up → routes', async () => {
+    const session = newSession('route');
+    seeded(session);
+    script({ is_re_task: 0.7, target_kind: 'native_binary' });
+    const r = await runHook('hook-route', rePrompt(session, { prompt: 'and the login flow?' }), env());
+    assert.match(context(r), /target: native_binary/);
+  });
+  test('the same 0.45 on a prompt with its own keyword still routes (T_ROUTE_RE unchanged)', async () => {
+    const session = newSession('route');
+    script({ is_re_task: 0.45, target_kind: 'native_binary' });
+    const r = await runHook('hook-route', rePrompt(session), env());
+    assert.match(context(r), /target: native_binary/);
+  });
+  test('REA_JEV_T_ROUTE_RE_FOLLOWUP tunes the follow-up bar', async () => {
+    const session = newSession('route');
+    seeded(session);
+    script({ is_re_task: 0.45, target_kind: 'native_binary' });
+    const r = await runHook('hook-route', rePrompt(session, { prompt: 'fix the false positive warning' }), env({ extra: { REA_JEV_T_ROUTE_RE_FOLLOWUP: '0.4' } }));
+    assert.match(context(r), /target: native_binary/);
+  });
+  test('is_re_task is asked about the prompt alone and names code changes during an investigation as not RE', async () => {
+    const before = fake.requests.length;
+    script({ is_re_task: 0.9, target_kind: 'native_binary' });
+    await runHook('hook-route', rePrompt(newSession('route')), env());
+    const q = fake.requests[before].body.questions.is_re_task;
+    assert.match(q.instructions, /Judging `prompt` alone \(ignore `active_target`\)/);
+    assert.match(q.criteria.false, /even while an investigation is active/);
+  });
+});
