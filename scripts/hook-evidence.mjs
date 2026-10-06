@@ -8,7 +8,12 @@
  *    runs in every mode. An absent or empty `tool_response` is recorded as
  *    `ok: false` so the gate never treats it as a reusable result; a payload
  *    over the stdin cap is recorded from its salvaged prefix as an oversize
- *    post and skips Jev.
+ *    post and skips Jev. When Claude Code replaced the result with its own
+ *    size notice ("Output has been saved to <file>"), the file Claude Code
+ *    saved for this call is read back (only from Claude Code's own
+ *    tool-results directory, only an REA envelope with an evidence_id) and
+ *    judged in its place; the notice itself, which is instructions to an
+ *    assistant, never reaches Jev.
  * 2. Skip Jev when mode is off, the tool is status- or mutation-class
  *    (`open_binary` is still scanned locally for limitations), the result text
  *    is under 400 chars, or the result is an error.
@@ -22,11 +27,14 @@
  * @module hook-evidence
  */
 
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { readStdinJson, emitAndExit, exitSilently, mode, threshold, debug } from './lib/hookio.mjs';
 import { askJev, confidenceOf, noul, score, resolveTimeoutMs } from './lib/jev.mjs';
 import { excerpt, redact, truncate } from './lib/redact.mjs';
 import { appendEvent, readEvents, summarize, logDecision } from './lib/ledger.mjs';
-import { isReaTool, bareToolName, effectClass, hashInput, canonicalJson, parseReaResult, isStaticTool } from './lib/rea.mjs';
+import { isReaTool, bareToolName, effectClass, hashInput, canonicalJson, parseReaResult, isStaticTool, harnessOversizeNotice } from './lib/rea.mjs';
 
 /** Hard ceiling for the whole hook, under the 15 s hooks.json timeout. */
 const SAFETY_MS = 14000;
@@ -36,6 +44,8 @@ const JEV_MAX_MS = SAFETY_MS - 3500;
 const STDIN_MAX = 32 * 1024 * 1024;
 /** Results shorter than this never reach Jev. */
 const MIN_RESULT_CHARS = 400;
+/** A saved result larger than this is not read back. */
+const SAVED_RESULT_MAX = 64 * 1024 * 1024;
 const QUESTION_MAX = 600;
 const RESULT_MAX = 6000;
 const RESULT_HEAD = 4500;
@@ -97,7 +107,11 @@ async function main() {
   const effect = effectClass(tool);
   const sessionId = String(input.session_id ?? 'unknown');
   const oversize = typeof input.__oversize_bytes__ === 'number' ? input.__oversize_bytes__ : 0;
-  const parsed = parseReaResult(input.tool_response);
+  const received = parseReaResult(input.tool_response);
+  // The host's size notice stands in for the result; judge the saved result.
+  const notice = received.json === null ? harnessOversizeNotice(received.text) : null;
+  const recovered = notice ? recoverSavedResult(notice.path, toolName) : null;
+  const parsed = recovered ?? received;
   if (parsed.empty && !oversize) parsed.error = 'empty tool_response';
   const ok = parsed.error === null;
   const limitations = parsed.limitations.map((l) => truncate(redact(l), LIMITATION_MAX)).slice(0, 40);
@@ -116,9 +130,14 @@ async function main() {
     ...(parsed.error && { error: excerpt(parsed.error, 200) }),
     ...((parsed.truncated || oversize) && { truncated: true }),
     ...(oversize && { oversize: true }),
+    ...(notice && { oversize_notice: true, recovered: Boolean(recovered) }),
   };
 
-  const skip = oversize ? `payload over ${STDIN_MAX} bytes (recorded from its prefix)` : skipReason({ m, effect, tool, ok, chars: parsed.text.length });
+  const skip = oversize
+    ? `payload over ${STDIN_MAX} bytes (recorded from its prefix)`
+    : notice && !recovered
+      ? 'host size notice; the saved result could not be read back'
+      : skipReason({ m, effect, tool, ok, chars: parsed.text.length });
   if (skip) {
     appendEvent(sessionId, event);
     debug(`evidence: ${tool} recorded (${parsed.evidenceIds.length} ids, ${limitations.length} limitations); jev skipped: ${skip}`);
@@ -165,6 +184,48 @@ async function main() {
 
   if (m === 'shadow' || verdict.messages.length === 0) return exitSilently(0);
   return emitAndExit({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: verdict.messages.join('\n') } });
+}
+
+/**
+ * Read back a result that Claude Code saved to a file because it was too
+ * large for the context. The path comes from tool-result text, so it is
+ * trusted only when every check holds: it is not a symlink; its real path is
+ * under `$CLAUDE_CONFIG_DIR/projects/` (default `~/.claude/projects/`) and
+ * contains a `/tool-results/` segment (matched anywhere under the root on
+ * purpose, so a change in Claude Code's intermediate layout, today
+ * `<project>/<session>/tool-results/`, does not silently disable recovery);
+ * its basename is the one Claude Code writes for this call
+ * (`mcp-<server>-<tool>-<ms>.txt`, the MCP tool name with `__` as `-`); it is
+ * a regular file of at most SAVED_RESULT_MAX bytes; and it parses as an REA
+ * envelope with an `evidence_id`. Containment is checked on real paths, so a
+ * symlinked `~/.claude` still works while a planted link does not.
+ *
+ * @param {string} filePath
+ * @param {string} toolName full MCP tool name, e.g. `mcp__plugin_rea-jev_rea__search_strings`
+ * @returns {ReturnType<typeof parseReaResult>|null}
+ */
+function recoverSavedResult(filePath, toolName) {
+  try {
+    if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) return null;
+    if (fs.lstatSync(filePath).isSymbolicLink()) return null;
+    const configDir = (process.env.CLAUDE_CONFIG_DIR || '').trim() || path.join(os.homedir(), '.claude');
+    const root = fs.realpathSync(path.join(path.resolve(configDir), 'projects')) + path.sep;
+    const real = fs.realpathSync(filePath);
+    if (!real.startsWith(root)) return null;
+    if (!real.includes(`${path.sep}tool-results${path.sep}`)) return null;
+    const base = path.basename(real);
+    const expectedPrefix = `${String(toolName).replace(/__/g, '-')}-`;
+    if (!base.startsWith(expectedPrefix) || !/^mcp-[\w.-]+\.txt$/.test(base)) return null;
+    const st = fs.statSync(real);
+    if (!st.isFile() || st.size === 0 || st.size > SAVED_RESULT_MAX) return null;
+    const parsed = parseReaResult(fs.readFileSync(real, 'utf8'));
+    const json = parsed.json;
+    if (!json || typeof json !== 'object' || Array.isArray(json)) return null;
+    if (typeof json.evidence_id !== 'string') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 /**

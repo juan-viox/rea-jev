@@ -72,7 +72,8 @@ than repeating it.
    `effects.launchesProcess` or name prefix changed moves between effect
    classes; check `docs/decision-points.md` still describes the gate correctly.
 7. Run `npm test` and `npm run validate`. Add a CHANGELOG entry and bump the
-   plugin version in `.claude-plugin/plugin.json`.
+   plugin version in `.claude-plugin/plugin.json`, `package.json`, and the
+   version strings in `docs/user-guide.html`.
 8. Users pick up the new pin on their next plugin update; Claude Code restarts
    the bundled server with the new `npx` spec.
 

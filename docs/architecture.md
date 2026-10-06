@@ -113,6 +113,11 @@ both a globally registered REA (`rea setup`) and the plugin's bundled server.
    truncation, and errors. The ledger gets a `post` record: hashes, IDs,
    limitations (at most 120 chars each), byte count. An empty response is a
    failed call; a response over 32 MB is recorded from its salvaged prefix.
+   When Claude Code replaced the result with its size notice ("Output has
+   been saved to <file>"), the file it saved for this call is read back from
+   its own `tool-results` directory (REA envelope only, at most 64 MB) and
+   judged instead; the notice never reaches Jev, and an unrecoverable notice
+   is recorded as `oversize_notice: true, recovered: false` and skips Jev.
 2. Skip Jev when the mode is `off`, the tool is status- or mutation-class
    (except `open_binary`, scanned locally for limitations), the result is under
    400 chars, or the result is an error.

@@ -4,6 +4,35 @@ All notable changes to rea-jev are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.2] - 2026-10-06
+
+Two false positives found while reverse-engineering a live website with the
+plugin active, both fixed with a measurement behind them.
+
+### Fixed
+
+- The evidence hook warned "text that reads as instructions to an assistant"
+  on results it never saw: when a result is too large for the context, Claude
+  Code hands the hook its own notice ("Output has been saved to <file>" plus
+  reading instructions) in place of the result. The hook now recognizes that
+  notice (both wordings, with and without "across M lines"), reads back
+  the file Claude Code saved for this call (only from Claude Code's own
+  `tool-results` directory under `$CLAUDE_CONFIG_DIR`, real path checked,
+  symlinks refused, only an REA envelope with an `evidence_id`, at most 64
+  MB) and judges the real result, so its Evidence IDs also reach the ledger and the Stop
+  hook. The notice itself never reaches Jev; an unreadable file is recorded
+  as `oversize_notice: true, recovered: false` and skips Jev.
+- The route hook routed "fix the false positive warning" as a website
+  investigation because the session had an active target. Measured on
+  jev-1.13: `is_re_task` for that prompt was 0.06 alone and 0.55 with the
+  target in the state. Two changes: the question now says to judge the prompt
+  alone and names code changes, tests, merges and formatting during an active
+  investigation as not reverse engineering (0.55 → 0.24), and a prompt that
+  reached Jev only through the ledger's REA activity, with no keyword, path,
+  or endpoint of its own, must clear the new `T_ROUTE_RE_FOLLOWUP` (0.5,
+  `REA_JEV_T_ROUTE_RE_FOLLOWUP`) instead of `T_ROUTE_RE` (0.35). Real
+  follow-ups still route ("and the login flow?" measured 0.83).
+
 ## [0.1.1] - 2026-10-06
 
 First run against the live TypeSafe API (`jev-1.13.0`): round trip 299 ms,
@@ -67,3 +96,5 @@ Initial release.
   `other`.
 
 [0.1.0]: https://github.com/juan-viox/rea-jev/releases/tag/v0.1.0
+[0.1.1]: https://github.com/juan-viox/rea-jev/compare/v0.1.0...v0.1.1
+[0.1.2]: https://github.com/juan-viox/rea-jev/compare/v0.1.1...v0.1.2

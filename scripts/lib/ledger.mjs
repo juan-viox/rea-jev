@@ -39,6 +39,8 @@ const ROUTE_RE_DEFAULT = 0.35;
  * @property {number} [bytes]           post
  * @property {string[]} [notes]         post: low_relevance|unknown_candidate|agent_directed_text
  * @property {string} [effect]          post: effect class, when the hook recorded it
+ * @property {boolean} [oversize_notice] post: the host replaced the result with its size notice
+ * @property {boolean} [recovered]      post: the saved result was read back and judged in the notice's place
  * @property {string} [prompt_excerpt]  route, ≤200 chars (ledger excerpt)
  * @property {string} [prompt_for_jev]  route, ≤1200 chars: the redacted request the gate/evidence/stop hooks send to Jev
  * @property {string|null} [declared_target] route
