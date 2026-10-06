@@ -1,0 +1,18 @@
+{
+  "session_id": "fixture-session",
+  "transcript_path": "/path/to/transcript.jsonl",
+  "cwd": "/path/to/project",
+  "hook_event_name": "PostToolUse",
+  "permission_mode": "default",
+  "tool_name": "mcp__rea__binary_session",
+  "tool_input": {},
+  "tool_use_id": "toolu_12_binary_session",
+  "tool_response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n \"result\": {\n  \"active\": true,\n  \"document\": \"Sample\",\n  \"provider\": \"hopper\",\n  \"opened_at\": \"2026-10-06T14:00:00Z\"\n }\n}"
+      }
+    ]
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "session_id": "fixture-session",
+  "transcript_path": "/path/to/transcript.jsonl",
+  "cwd": "/path/to/project",
+  "hook_event_name": "PostToolUse",
+  "permission_mode": "default",
+  "tool_name": "mcp__plugin_rea-jev_rea__search_strings",
+  "tool_input": {
+    "pattern": "[unterminated",
+    "case_sensitive": false
+  },
+  "tool_use_id": "toolu_14_search_strings_error",
+  "tool_response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Error: invalid regular expression: missing ]"
+      }
+    ],
+    "isError": true
+  }
+}

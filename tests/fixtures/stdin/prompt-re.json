@@ -1,0 +1,8 @@
+{
+  "session_id": "fixture-session",
+  "transcript_path": "/path/to/transcript.jsonl",
+  "cwd": "/path/to/project",
+  "hook_event_name": "UserPromptSubmit",
+  "permission_mode": "default",
+  "prompt": "How does the export feature in ./tests/fixtures/Sample.app work? Trace it from the menu item down to the code that writes the file."
+}

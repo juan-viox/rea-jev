@@ -1,0 +1,12 @@
+{
+  "session_id": "fixture-session",
+  "transcript_path": "/path/to/transcript.jsonl",
+  "cwd": "/path/to/project",
+  "hook_event_name": "PreToolUse",
+  "permission_mode": "default",
+  "tool_name": "mcp__rea__list_browser_targets",
+  "tool_input": {
+    "cdp_endpoint": "http://10.42.0.7:9222"
+  },
+  "tool_use_id": "toolu_03_list_browser_targets"
+}

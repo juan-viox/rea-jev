@@ -1,0 +1,10 @@
+{
+  "session_id": "fixture-session",
+  "transcript_path": "/path/to/transcript.jsonl",
+  "cwd": "/path/to/project",
+  "hook_event_name": "PreToolUse",
+  "permission_mode": "default",
+  "tool_name": "mcp__rea__binary_session",
+  "tool_input": {},
+  "tool_use_id": "toolu_02_binary_session"
+}

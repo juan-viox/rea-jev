@@ -1,0 +1,71 @@
+{
+  "session_id": "fixture-session",
+  "transcript_path": "/path/to/transcript.jsonl",
+  "cwd": "/path/to/project",
+  "hook_event_name": "PostToolUse",
+  "permission_mode": "default",
+  "tool_name": "mcp__plugin_rea-jev_rea__analyze_javascript_application",
+  "tool_input": {
+    "input_path": "/Applications/Notes.app/Contents/Resources/app.asar"
+  },
+  "tool_use_id": "toolu_13_analyze_js",
+  "tool_response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n \"result\": {\n  \"application_root\": \"/Applications/Notes.app/Contents/Resources/app.asar\",\n  \"entry_points\": [\n   \"main.js\",\n   \"renderer/index.js\",\n   \"preload.js\"\n  ],\n  \"modules\": 418,\n  \"bundles\": [\n   {\n    \"file\": \"renderer/index.js\",\n    \"minified\": true,\n    \"source_map\": false,\n    \"size_bytes\": 2348112\n   },\n   {\n    \"file\": \"main.js\",\n    \"minified\": false,\n    \"source_map\": false,\n    \"size_bytes\": 88204\n   }\n  ],\n  \"ipc_channels\": [\n   \"notes:export\",\n   \"notes:export-progress\",\n   \"notes:open-external\",\n   \"app:get-version\"\n  ],\n  \"coverage\": {\n   \"modules_analyzed\": 391,\n   \"modules_unknown\": [\n    \"vendor/wasm-loader.js (WebAssembly module not analyzed)\",\n    \"renderer/chunk-7f3a.js (dynamic import target not resolved)\"\n   ],\n   \"unknowns\": [\n    \"The export worker is spawned from a path computed at runtime; its target could not be resolved statically.\"\n   ]\n  },\n  \"residual_unknowns\": [\n   \"Whether notes:export writes outside the user-selected directory is not established without runtime observation.\"\n  ]\n },\n \"evidence_id\": \"ev_ace7166e88bdb09909b9cb196cc67a61510e5629ec730fd7d50a25d1069e075c\",\n \"evidence\": {\n  \"kind\": \"electron-provider.analyze_javascript_application\",\n  \"normalized_result\": {\n   \"modules\": 418\n  }\n }\n}"
+      }
+    ],
+    "structuredContent": {
+      "result": {
+        "application_root": "/Applications/Notes.app/Contents/Resources/app.asar",
+        "entry_points": [
+          "main.js",
+          "renderer/index.js",
+          "preload.js"
+        ],
+        "modules": 418,
+        "bundles": [
+          {
+            "file": "renderer/index.js",
+            "minified": true,
+            "source_map": false,
+            "size_bytes": 2348112
+          },
+          {
+            "file": "main.js",
+            "minified": false,
+            "source_map": false,
+            "size_bytes": 88204
+          }
+        ],
+        "ipc_channels": [
+          "notes:export",
+          "notes:export-progress",
+          "notes:open-external",
+          "app:get-version"
+        ],
+        "coverage": {
+          "modules_analyzed": 391,
+          "modules_unknown": [
+            "vendor/wasm-loader.js (WebAssembly module not analyzed)",
+            "renderer/chunk-7f3a.js (dynamic import target not resolved)"
+          ],
+          "unknowns": [
+            "The export worker is spawned from a path computed at runtime; its target could not be resolved statically."
+          ]
+        },
+        "residual_unknowns": [
+          "Whether notes:export writes outside the user-selected directory is not established without runtime observation."
+        ]
+      },
+      "evidence_id": "ev_ace7166e88bdb09909b9cb196cc67a61510e5629ec730fd7d50a25d1069e075c",
+      "evidence": {
+        "kind": "electron-provider.analyze_javascript_application",
+        "normalized_result": {
+          "modules": 418
+        }
+      }
+    }
+  }
+}

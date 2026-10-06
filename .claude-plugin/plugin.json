@@ -1,0 +1,41 @@
+{
+  "name": "rea-jev",
+  "version": "0.1.0",
+  "description": "Reverse-engineer anything with REA's MCP tools, guided by TypeSafe's Jev System One model: routes the target before Claude thinks, gates risky REA calls, scores every result as evidence, and checks completeness before a turn ends.",
+  "author": {
+    "name": "Juan Alvarado",
+    "url": "https://github.com/juan-viox"
+  },
+  "homepage": "https://github.com/juan-viox/rea-jev",
+  "repository": "https://github.com/juan-viox/rea-jev",
+  "license": "MIT",
+  "keywords": [
+    "reverse-engineering",
+    "rea",
+    "rea-agents",
+    "jev",
+    "typesafe",
+    "system-one",
+    "hooks",
+    "mcp",
+    "binary-analysis",
+    "electron",
+    "dotnet",
+    "android",
+    "evidence"
+  ],
+  "userConfig": {
+    "typesafe_api_key": {
+      "type": "string",
+      "title": "TypeSafe API key",
+      "description": "TypeSafe API key for Jev. Leave unset to use TYPESAFE_API_KEY or OPENROUTER_API_KEY from the environment.",
+      "sensitive": true
+    },
+    "mode": {
+      "type": "string",
+      "title": "System 1 mode",
+      "description": "How the Jev hooks act. off: ledger only, no Jev calls. shadow: log what would have happened, never change behavior. advise (default): inject route and evidence notes, deny identical repeated REA calls, ask on scope or risk, never block a stop. enforce: also deny out-of-scope runtime calls and block an unverified \"done\" at most once per stop.",
+      "default": "advise"
+    }
+  }
+}
