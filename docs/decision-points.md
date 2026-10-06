@@ -78,8 +78,8 @@ endpoint is present, or the ledger shows REA activity in this session.
   existing path, or endpoint of its own, which reached Jev only because the
   ledger shows REA activity, must clear `T_ROUTE_RE_FOLLOWUP` instead: an
   `active_target` pulls `is_re_task` up for unrelated follow-ups such as
-  "fix the warning" (0.55 with a target, 0.06 without, measured on
-  jev-1.13).
+  "fix the false positive warning" (0.55 with a target, 0.06 without,
+  measured on jev-1.13).
 - `target_kind` confidence `< T_ROUTE_MIN`, or the choice is
   `unknown_or_missing` → inject: the route is ambiguous; ask the user which
   artifact before opening anything; list the top two candidates with their
@@ -182,11 +182,14 @@ launches a process and its name starts with `capture_` or `observe_`;
    `tool_response` is recorded as `ok: false` (`error: "empty tool_response"`)
    so the gate never treats it as a reusable result. When Claude Code replaced
    the result with its own size notice ("Output has been saved to <file>"),
-   the saved file is read back and judged in the notice's place, only from
-   `~/.claude/projects/<project>/tool-results/mcp-*.txt`, only up to 64 MB, and
-   only when it parses as an REA envelope (`oversize_notice: true, recovered:
-   true`); otherwise the post is recorded with `recovered: false` and Jev is
-   skipped. The notice itself is text addressed to an assistant and never
+   the file Claude Code saved for this call is read back and judged in the
+   notice's place, only when it is not a symlink, its real path is under
+   `$CLAUDE_CONFIG_DIR/projects/` (default `~/.claude/projects/`; today
+   `<project>/<session>/tool-results/`) with a `tool-results` segment, its
+   basename is `mcp-<server>-<tool>-<ms>.txt` for this tool, it is at most 64
+   MB, and it parses as an REA envelope with an `evidence_id`
+   (`oversize_notice: true, recovered: true`); otherwise the post is recorded
+   with `recovered: false` and Jev is skipped. The notice itself is text addressed to an assistant and never
    reaches Jev. A payload over the 32 MB
    stdin cap is recorded from its salvaged prefix as an oversize post and skips
    Jev. The base event is written even when the safety timer pre-empts Jev.

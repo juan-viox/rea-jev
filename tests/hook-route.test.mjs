@@ -297,7 +297,7 @@ describe('modes and fail-open', () => {
 describe('follow-up bar', () => {
   // A prompt with no keyword, path, or endpoint reaches Jev only because the
   // ledger shows REA activity. An active target pulls is_re_task up for such
-  // prompts ("fix the warning" measured 0.55 with a target, 0.06 without), so
+  // prompts ("fix the false positive warning" measured 0.55 with a target, 0.06 without), so
   // they must clear T_ROUTE_RE_FOLLOWUP (0.5) rather than T_ROUTE_RE (0.35).
   const seeded = (session) =>
     seedLedger(tmp, session, [

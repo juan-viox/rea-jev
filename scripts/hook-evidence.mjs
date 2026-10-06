@@ -9,10 +9,11 @@
  *    `ok: false` so the gate never treats it as a reusable result; a payload
  *    over the stdin cap is recorded from its salvaged prefix as an oversize
  *    post and skips Jev. When Claude Code replaced the result with its own
- *    size notice ("Output has been saved to <file>"), the saved file is read
- *    back (only from Claude Code's tool-results directory, only when it is an
- *    REA envelope) and judged in its place; the notice itself, which is
- *    instructions to an assistant, never reaches Jev.
+ *    size notice ("Output has been saved to <file>"), the file Claude Code
+ *    saved for this call is read back (only from Claude Code's own
+ *    tool-results directory, only an REA envelope with an evidence_id) and
+ *    judged in its place; the notice itself, which is instructions to an
+ *    assistant, never reaches Jev.
  * 2. Skip Jev when mode is off, the tool is status- or mutation-class
  *    (`open_binary` is still scanned locally for limitations), the result text
  *    is under 400 chars, or the result is an error.
@@ -109,7 +110,7 @@ async function main() {
   const received = parseReaResult(input.tool_response);
   // The host's size notice stands in for the result; judge the saved result.
   const notice = received.json === null ? harnessOversizeNotice(received.text) : null;
-  const recovered = notice ? recoverSavedResult(notice.path) : null;
+  const recovered = notice ? recoverSavedResult(notice.path, toolName) : null;
   const parsed = recovered ?? received;
   if (parsed.empty && !oversize) parsed.error = 'empty tool_response';
   const ok = parsed.error === null;
@@ -187,28 +188,40 @@ async function main() {
 
 /**
  * Read back a result that Claude Code saved to a file because it was too
- * large for the context. Only a regular file under Claude Code's own
- * `~/.claude/projects/<project>/tool-results/mcp-<tool>.txt` is accepted, only up to
- * SAVED_RESULT_MAX bytes, and only when it parses as an REA envelope; the
- * path comes from tool-result text, so anything else is refused.
+ * large for the context. The path comes from tool-result text, so it is
+ * trusted only when every check holds: it is not a symlink; its real path is
+ * under `$CLAUDE_CONFIG_DIR/projects/` (default `~/.claude/projects/`) and
+ * contains a `/tool-results/` segment (matched anywhere under the root on
+ * purpose, so a change in Claude Code's intermediate layout, today
+ * `<project>/<session>/tool-results/`, does not silently disable recovery);
+ * its basename is the one Claude Code writes for this call
+ * (`mcp-<server>-<tool>-<ms>.txt`, the MCP tool name with `__` as `-`); it is
+ * a regular file of at most SAVED_RESULT_MAX bytes; and it parses as an REA
+ * envelope with an `evidence_id`. Containment is checked on real paths, so a
+ * symlinked `~/.claude` still works while a planted link does not.
  *
  * @param {string} filePath
+ * @param {string} toolName full MCP tool name, e.g. `mcp__plugin_rea-jev_rea__search_strings`
  * @returns {ReturnType<typeof parseReaResult>|null}
  */
-function recoverSavedResult(filePath) {
+function recoverSavedResult(filePath, toolName) {
   try {
     if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) return null;
-    const resolved = path.resolve(filePath);
-    const root = path.join(os.homedir(), '.claude', 'projects') + path.sep;
-    if (!resolved.startsWith(root)) return null;
-    if (!resolved.includes(`${path.sep}tool-results${path.sep}`)) return null;
-    if (!/^mcp-[\w.-]+\.txt$/.test(path.basename(resolved))) return null;
-    const st = fs.statSync(resolved);
+    if (fs.lstatSync(filePath).isSymbolicLink()) return null;
+    const configDir = (process.env.CLAUDE_CONFIG_DIR || '').trim() || path.join(os.homedir(), '.claude');
+    const root = fs.realpathSync(path.join(path.resolve(configDir), 'projects')) + path.sep;
+    const real = fs.realpathSync(filePath);
+    if (!real.startsWith(root)) return null;
+    if (!real.includes(`${path.sep}tool-results${path.sep}`)) return null;
+    const base = path.basename(real);
+    const expectedPrefix = `${String(toolName).replace(/__/g, '-')}-`;
+    if (!base.startsWith(expectedPrefix) || !/^mcp-[\w.-]+\.txt$/.test(base)) return null;
+    const st = fs.statSync(real);
     if (!st.isFile() || st.size === 0 || st.size > SAVED_RESULT_MAX) return null;
-    const parsed = parseReaResult(fs.readFileSync(resolved, 'utf8'));
+    const parsed = parseReaResult(fs.readFileSync(real, 'utf8'));
     const json = parsed.json;
     if (!json || typeof json !== 'object' || Array.isArray(json)) return null;
-    if (!('evidence_id' in json) && !('result' in json)) return null;
+    if (typeof json.evidence_id !== 'string') return null;
     return parsed;
   } catch {
     return null;

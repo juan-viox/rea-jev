@@ -15,9 +15,11 @@ plugin active, both fixed with a measurement behind them.
   on results it never saw: when a result is too large for the context, Claude
   Code hands the hook its own notice ("Output has been saved to <file>" plus
   reading instructions) in place of the result. The hook now recognizes that
-  notice, reads the saved file back (only from Claude Code's own
-  `tool-results` directory, only an REA envelope, at most 64 MB) and judges
-  the real result, so its Evidence IDs also reach the ledger and the Stop
+  notice (both wordings, with and without "across M lines"), reads back
+  the file Claude Code saved for this call (only from Claude Code's own
+  `tool-results` directory under `$CLAUDE_CONFIG_DIR`, real path checked,
+  symlinks refused, only an REA envelope with an `evidence_id`, at most 64
+  MB) and judges the real result, so its Evidence IDs also reach the ledger and the Stop
   hook. The notice itself never reaches Jev; an unreadable file is recorded
   as `oversize_notice: true, recovered: false` and skips Jev.
 - The route hook routed "fix the false positive warning" as a website
@@ -94,3 +96,5 @@ Initial release.
   `other`.
 
 [0.1.0]: https://github.com/juan-viox/rea-jev/releases/tag/v0.1.0
+[0.1.1]: https://github.com/juan-viox/rea-jev/compare/v0.1.0...v0.1.1
+[0.1.2]: https://github.com/juan-viox/rea-jev/compare/v0.1.1...v0.1.2

@@ -250,6 +250,31 @@ export function hashInput(toolName, toolInput) {
 }
 
 /**
+ * Claude Code replaces a tool result that is too large for the context with a
+ * notice of the form "Error: result (N characters) exceeds maximum allowed
+ * tokens. Output has been saved to <path>." (current builds write
+ * "N characters across M lines") followed by instructions to the assistant on
+ * how to read that file. Hooks receive the notice, not the result. The path
+ * runs to the end of its line, so directories with spaces survive. Returns
+ * the character count and the saved path, or null for anything else.
+ */
+const OVERSIZE_NOTICE_RE =
+  /^Error: result \(([\d,]+) characters(?: across [\d,]+ lines?)?\) exceeds maximum allowed tokens\. Output has been saved to ([^\r\n]+?)\.?[ \t]*(?:\r?\n|$)/;
+
+/**
+ * Recognize Claude Code's size notice (see OVERSIZE_NOTICE_RE).
+ *
+ * @param {unknown} text
+ * @returns {{chars: number, path: string}|null}
+ */
+export function harnessOversizeNotice(text) {
+  if (typeof text !== 'string') return null;
+  const m = OVERSIZE_NOTICE_RE.exec(text.trimStart());
+  if (!m) return null;
+  return { chars: Number(m[1].replace(/,/g, '')) || 0, path: m[2] };
+}
+
+/**
  * Parse an MCP tool result from REA.
  *
  * Accepts `{content:[{type:'text',text}], structuredContent?, isError?}`, a
@@ -269,25 +294,6 @@ export function hashInput(toolName, toolInput) {
  * @param {unknown} toolResponse
  * @returns {{text: string, json: unknown|null, evidenceIds: string[], evidenceCount: number, limitations: string[], unknowns: string[], truncated: boolean, error: string|null, bytes: number, empty: boolean}}
  */
-/**
- * Claude Code replaces a tool result that is too large for the context with a
- * notice of the form "Error: result (N characters) exceeds maximum allowed
- * tokens. Output has been saved to <path>." followed by instructions to the
- * assistant on how to read that file. Hooks receive the notice, not the
- * result. Returns the character count and the saved path, or null.
- *
- * @param {unknown} text
- * @returns {{chars: number, path: string}|null}
- */
-export function harnessOversizeNotice(text) {
-  if (typeof text !== 'string') return null;
-  const m = OVERSIZE_NOTICE_RE.exec(text.trimStart());
-  if (!m) return null;
-  return { chars: Number(m[1].replace(/,/g, '')) || 0, path: m[2] };
-}
-
-const OVERSIZE_NOTICE_RE = /^Error: result \(([\d,]+) characters\) exceeds maximum allowed tokens\. Output has been saved to (\S+?)\.?(?:\s|$)/;
-
 export function parseReaResult(toolResponse) {
   const out = { text: '', json: null, evidenceIds: [], evidenceCount: 0, limitations: [], unknowns: [], truncated: false, error: null, bytes: 0, empty: false };
   if (toolResponse == null) {

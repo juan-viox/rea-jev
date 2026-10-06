@@ -251,7 +251,7 @@ Per-session JSONL at `$REA_JEV_HOME/sessions/<session_id>.jsonl`. Records:
 ```jsonc
 { "t": 1730000000000, "kind": "route",  "prompt_excerpt": "...≤200", "prompt_for_jev": "...≤1200", "answers": {...}, "target_hint": "...", "declared_target": "/abs/path|url|null", "decision": "route|ambiguous|silent" }
 { "t": ..., "kind": "pre",    "tool": "open_binary", "input_hash": "sha256:...", "input_excerpt": "...≤200", "decision": "allow|ask|deny|silent", "source": "local|jev", "answers"?: {...} }
-{ "t": ..., "kind": "post",   "tool": "...", "input_hash": "...", "ok": true, "evidence_ids": ["ev_..." /* ≤64 */], "evidence_count"?: 100, "limitations": ["...≤120"...], "bytes": 12345, "answers"?: {...}, "notes": ["low_relevance"|"unknown_candidate"|"agent_directed_text"|"claims_runtime"], "oversize"?: true }
+{ "t": ..., "kind": "post",   "tool": "...", "input_hash": "...", "ok": true, "evidence_ids": ["ev_..." /* ≤64 */], "evidence_count"?: 100, "limitations": ["...≤120"...], "bytes": 12345, "answers"?: {...}, "notes": ["low_relevance"|"unknown_candidate"|"agent_directed_text"|"claims_runtime"], "oversize"?: true, "oversize_notice"?: true, "recovered"?: true|false }
 { "t": ..., "kind": "stop",   "decision": "allow|block|shadow_block", "answers": {...}, "reason": "...", "facts": {...} }
 ```
 
@@ -404,7 +404,7 @@ the ledger shows REA activity in this session.
 | `wants_build` | noul | "Does `prompt` ask to build, port, or recreate the feature in the user's own project after it is understood?" | — |
 
 **Policy:**
-- `is_re_task < T_ROUTE_RE (0.35)` → silent (and when `target_kind == source_repository` with confidence ≥ 0.6 → silent). When the pre-filter held only because the ledger shows REA activity (the prompt has no keyword, existing path, or endpoint of its own), the bar is `T_ROUTE_RE_FOLLOWUP (0.5)` instead: an `active_target` pulls `is_re_task` up for unrelated follow-ups ("fix the warning" measured 0.55 with a target and 0.06 without), and the same bar decides whether the sniffed target replaces the declared one.
+- `is_re_task < T_ROUTE_RE (0.35)` → silent (and when `target_kind == source_repository` with confidence ≥ 0.6 → silent). When the pre-filter held only because the ledger shows REA activity (the prompt has no keyword, existing path, or endpoint of its own), the bar is `T_ROUTE_RE_FOLLOWUP (0.5)` instead: an `active_target` pulls `is_re_task` up for unrelated follow-ups ("fix the false positive warning" measured 0.55 with a target and 0.06 without). The same bar (`T_ROUTE_RE` or `T_ROUTE_RE_FOLLOWUP`, whichever applies) also decides whether a sniffed target replaces the declared one; a follow-up-only prompt has no sniffed target (no existing path or URL), so it always carries the previous declared target forward.
 - `target_kind` confidence `< T_ROUTE_MIN (0.5)` or choice `unknown_or_missing` → inject: route is ambiguous; ask the user which artifact before opening anything; list the top two candidates with probabilities.
 - Otherwise inject a compact route block (≤ 12 lines):
 
@@ -466,12 +466,16 @@ call (`decision: silent`, `reason: timeout`).
    `evidence_count`, limitations, bytes, ok). Track `open_binary`/`close_binary`.
    An absent or empty `tool_response` is `ok: false` with `error: "empty tool_response"`
    (nothing to reuse). When the host replaced the result with its own size
-   notice ("Output has been saved to <file>"), the saved file is read back
-   and judged in the notice's place, but only from the host's own
-   `~/.claude/projects/<project>/tool-results/mcp-*.txt`, only up to 64 MB, and
-   only when it parses as an REA envelope; the notice itself (instructions to
-   an assistant) never reaches Jev, and an unrecoverable notice is recorded
-   (`oversize_notice: true, recovered: false`) and skips Jev. A payload over the 32 MB stdin cap is recorded from its
+   notice ("Output has been saved to <file>"), the file the host saved for
+   this call is read back and judged in the notice's place, but only when it
+   is not a symlink, its real path is under `$CLAUDE_CONFIG_DIR/projects/`
+   (default `~/.claude/projects/`; today the layout is
+   `<project>/<session>/tool-results/`) and contains a `tool-results` segment,
+   its basename is `mcp-<server>-<tool>-<ms>.txt` for this tool, it is at most
+   64 MB, and it parses as an REA envelope with an `evidence_id`; the notice
+   itself (instructions to an assistant) never reaches Jev, and an
+   unrecoverable notice is recorded (`oversize_notice: true, recovered:
+   false`) and skips Jev. A payload over the 32 MB stdin cap is recorded from its
    salvaged prefix as `{ ok: true, bytes: <total>, truncated: true, oversize: true }`
    and skips Jev. The base event is also written when the safety timer pre-empts Jev.
 2. Skip Jev when: mode `off`; tool is `status`- or `mutation`-class (except

@@ -33,7 +33,7 @@ let counter = 0;
 export function hookEnv({ fakeUrl, home, mode = 'advise', key = true, extra = {} }) {
   const env = {};
   for (const [k, v] of Object.entries(process.env)) {
-    if (/^(TYPESAFE_API_KEY|OPENROUTER_API_KEY|JEV_BASE_URL|REA_JEV_|CLAUDE_PLUGIN_)/.test(k)) continue;
+    if (/^(TYPESAFE_API_KEY|OPENROUTER_API_KEY|JEV_BASE_URL|CLAUDE_CONFIG_DIR|REA_JEV_|CLAUDE_PLUGIN_)/.test(k)) continue;
     env[k] = v;
   }
   env.REA_JEV_HOME = home;

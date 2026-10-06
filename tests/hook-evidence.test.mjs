@@ -411,12 +411,23 @@ describe('host size notice (result saved to a file)', () => {
   const NOTICE_TAIL =
     '\nFormat: JSON with schema: {result: {...}, evidence_id: string}\nUse jq to make structured queries.\nREQUIREMENTS FOR SUMMARIZATION/ANALYSIS/REVIEW:\n- You MUST read the content from the file in sequential chunks until 100% of the content has been read.';
   const notice = (p, chars = 924671) => `Error: result (${chars.toLocaleString('en-US')} characters) exceeds maximum allowed tokens. Output has been saved to ${p}.${NOTICE_TAIL}`;
-  const savedDir = (home) => path.join(home, '.claude', 'projects', '-home-user', 'tool-results');
+  // Claude Code's real layout: <config>/projects/<project>/<session>/tool-results/
+  const savedDir = (configDir) => path.join(configDir, 'projects', '-home-user', 'afd88f2e-b34e-5946-b345-44e905b2c866', 'tool-results');
+  const homeConfig = (home) => path.join(home, '.claude');
   const asNotice = (name, text) => payload(name, { tool_response: { content: [{ type: 'text', text }] } });
 
   test('harnessOversizeNotice parses the host notice and nothing else (in-process)', () => {
     const n = harnessOversizeNotice(notice('/root/.claude/projects/x/tool-results/mcp-plugin_rea-jev_rea-inspect_web_page-1.txt'));
     assert.deepEqual(n, { chars: 924671, path: '/root/.claude/projects/x/tool-results/mcp-plugin_rea-jev_rea-inspect_web_page-1.txt' });
+    // Current builds count lines too; directories may contain spaces; CRLF hosts.
+    const spaced = '/Users/First Last/.claude/projects/p/tool-results/mcp-plugin_rea-jev_rea-search_strings-2.txt';
+    assert.equal(harnessOversizeNotice(notice(spaced)).path, spaced);
+    for (const across of [' across 1 line', ' across 2,000 lines']) {
+      const text = `Error: result (924,671 characters${across}) exceeds maximum allowed tokens. Output has been saved to ${spaced}.\r\nFormat: JSON`;
+      assert.deepEqual(harnessOversizeNotice(text), { chars: 924671, path: spaced }, across);
+    }
+    assert.equal(harnessOversizeNotice(`Error: result (5 characters) exceeds maximum allowed tokens. Output has been saved to ${spaced}`).path, spaced, 'path at end of text, no period');
+    assert.equal(harnessOversizeNotice('Error: result (5 characters) exceeds maximum allowed tokens. Failed to save output to file.'), null);
     assert.equal(harnessOversizeNotice('{"result":{}}'), null);
     assert.equal(harnessOversizeNotice('Error: result exceeds something else'), null);
     assert.equal(harnessOversizeNotice(null), null);
@@ -424,7 +435,7 @@ describe('host size notice (result saved to a file)', () => {
   test('the saved REA result is read back: its Evidence ID lands in the ledger, Jev judges the result, and the notice never reaches Jev', async () => {
     const home = makeTmp('evidence-home');
     try {
-      const dir = savedDir(home);
+      const dir = savedDir(homeConfig(home));
       fs.mkdirSync(dir, { recursive: true });
       const original = payload('post-search-strings.json');
       const text = original.tool_response.content[0].text;
@@ -434,7 +445,8 @@ describe('host size notice (result saved to a file)', () => {
       const session = newSession('evidence');
       seedLedger(tmp, session, [routeEvent]);
       script(QUIET);
-      const r = await runHook('hook-evidence', { ...asNotice('post-search-strings.json', notice(file)), session_id: session }, env({ extra: { HOME: home } }));
+      const current = notice(file).replace(' characters)', ' characters across 1 line)');
+      const r = await runHook('hook-evidence', { ...asNotice('post-search-strings.json', current), session_id: session }, env({ extra: { HOME: home } }));
       assert.equal(r.code, 0, r.stderr);
       assert.equal(r.stdout, '', 'quiet answers, no warning');
       assert.equal(fake.requests.length, before + 1, 'Jev was asked about the recovered result');
@@ -451,19 +463,36 @@ describe('host size notice (result saved to a file)', () => {
       fs.rmSync(home, { recursive: true, force: true });
     }
   });
-  test('a notice whose file is missing, outside the tool-results directory, or not an REA envelope is recorded without a Jev call', async () => {
+  test('a notice is refused, with no Jev call and no warning, unless the file is the one Claude Code saved for this call', async () => {
     const home = makeTmp('evidence-home');
     try {
-      const dir = savedDir(home);
+      const dir = savedDir(homeConfig(home));
       fs.mkdirSync(dir, { recursive: true });
-      const outside = path.join(home, 'secret.txt');
-      fs.writeFileSync(outside, JSON.stringify({ result: { x: 'y'.repeat(500) }, evidence_id: `ev_${'d'.repeat(64)}` }));
-      const notEnvelope = path.join(dir, 'mcp-plugin_rea-jev_rea-list_strings-2.txt');
-      fs.writeFileSync(notEnvelope, 'just some text, not JSON '.repeat(40));
+      const envelope = JSON.stringify({ result: { strings: 'y'.repeat(500) }, evidence_id: `ev_${'d'.repeat(64)}` });
+      const write = (p, content = envelope) => {
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.writeFileSync(p, content);
+        return p;
+      };
+      // Each decoy passes every other guard, so a deleted guard fails its case.
+      const outsideRoot = write(path.join(home, 'elsewhere', 'projects', 'p', 's', 'tool-results', 'mcp-plugin_rea-jev_rea-search_strings-3.txt'));
+      const noSegment = write(path.join(homeConfig(home), 'projects', 'p', 'mcp-plugin_rea-jev_rea-search_strings-4.txt'));
+      const otherTool = write(path.join(dir, 'mcp-other_server-some_tool-5.txt'));
+      const noEvidenceId = write(path.join(dir, 'mcp-plugin_rea-jev_rea-search_strings-6.txt'), JSON.stringify({ result: { x: 'y'.repeat(500) } }));
+      const notJson = write(path.join(dir, 'mcp-plugin_rea-jev_rea-search_strings-2.txt'), 'just some text, not JSON '.repeat(40));
+      const linkedFile = path.join(dir, 'mcp-plugin_rea-jev_rea-search_strings-7.txt');
+      fs.symlinkSync(outsideRoot, linkedFile);
+      fs.symlinkSync(path.dirname(outsideRoot), path.join(dir, 'linkdir'));
+      const throughLinkedDir = path.join(dir, 'linkdir', 'mcp-plugin_rea-jev_rea-search_strings-3.txt');
       const cases = [
         ['missing file', path.join(dir, 'mcp-plugin_rea-jev_rea-search_strings-9.txt')],
-        ['outside the tool-results directory', outside],
-        ['not an REA envelope', notEnvelope],
+        ['outside the projects root', outsideRoot],
+        ['no tool-results segment', noSegment],
+        ['saved for another tool', otherTool],
+        ['REA-shaped but no evidence_id', noEvidenceId],
+        ['not JSON', notJson],
+        ['a symlink in place of the file', linkedFile],
+        ['a symlinked directory on the way', throughLinkedDir],
       ];
       for (const [label, file] of cases) {
         const before = fake.requests.length;
@@ -481,6 +510,28 @@ describe('host size notice (result saved to a file)', () => {
       }
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+  test('CLAUDE_CONFIG_DIR relocates the root the saved file must live under', async () => {
+    const home = makeTmp('evidence-home');
+    const configDir = makeTmp('evidence-config');
+    try {
+      const dir = savedDir(configDir);
+      fs.mkdirSync(dir, { recursive: true });
+      const text = payload('post-search-strings.json').tool_response.content[0].text;
+      const file = path.join(dir, 'mcp-plugin_rea-jev_rea-search_strings-1791317651285.txt');
+      fs.writeFileSync(file, text);
+      const before = fake.requests.length;
+      const session = newSession('evidence');
+      seedLedger(tmp, session, [routeEvent]);
+      script(QUIET);
+      const r = await runHook('hook-evidence', { ...asNotice('post-search-strings.json', notice(file)), session_id: session }, env({ extra: { HOME: home, CLAUDE_CONFIG_DIR: configDir } }));
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(fake.requests.length, before + 1, 'recovered through the relocated config dir');
+      assert.equal(lastPost(session).recovered, true);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(configDir, { recursive: true, force: true });
     }
   });
 });

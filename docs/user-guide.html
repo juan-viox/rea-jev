@@ -126,7 +126,7 @@ footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--rule);
 </nav>
 
 <main>
-<div class="eyebrow">rea-jev 0.1.1 · Claude Code plugin</div>
+<div class="eyebrow">rea-jev 0.1.2 · Claude Code plugin</div>
 <h1>Reverse-engineer anything, with a reflex layer</h1>
 <p class="lede">rea-jev pairs REA's reverse-engineering tools with TypeSafe's Jev model. Claude does the thinking; Jev makes the small, fast calls that keep an investigation on track. This guide shows how to install it and what a session looks like.</p>
 
@@ -172,7 +172,7 @@ export OPENROUTER_API_KEY=...</code></pre></div>
 <div class="callout rea">
   <p><strong>Requirements.</strong> Node 22.19 or newer (the bundled REA server requires it), macOS or Linux. Native binaries need <a href="https://www.hopperapp.com/">Hopper</a> or Ghidra 12.1.4 with a JDK 21; JavaScript, .NET, archive, browser, and Electron analysis work without either. The plugin bundles REA pinned to <code>rea-agents@4.0.1</code>, so nothing else to install. Android APK tools are not in that release yet; the skill falls back to archive inventory until the pin is bumped.</p>
 </div>
-<p>Every session then starts with one status line, for example <code>rea-jev 0.1.1 · mode advise · Jev key: present (typesafe) · REA pinned 4.0.1 · /rea-jev:setup for diagnostics</code>. If it says the key is missing, nothing is broken; System 1 is simply off until you add one.</p>
+<p>Every session then starts with one status line, for example <code>rea-jev 0.1.2 · mode advise · Jev key: present (typesafe) · REA pinned 4.0.1 · /rea-jev:setup for diagnostics</code>. If it says the key is missing, nothing is broken; System 1 is simply off until you add one.</p>
 
 <h2 id="first">Your first investigation</h2>
 <p>Pick an app you are entitled to analyze and a feature you want to understand. The slash command takes the target first, then the question.</p>
@@ -438,6 +438,6 @@ google-chrome --remote-debugging-port=9222</code></pre></div>
   <li>Inside Claude Code: <code>/rea-jev:setup</code>, <code>/rea-jev:investigate</code>, and the skill <code>/rea-jev:reverse-engineer</code>.</li>
 </ul>
 
-<footer>rea-jev 0.1.1 · MIT · Recorded outputs in this guide come from fixture runs against jev-1.13.0 on 2026-10-06; your probabilities will differ.</footer>
+<footer>rea-jev 0.1.2 · MIT · Recorded outputs in this guide come from fixture runs against jev-1.13.0 on 2026-10-06; your probabilities will differ.</footer>
 </main>
 </div>
