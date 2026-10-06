@@ -295,8 +295,8 @@ typesafe jev-1.13.0 · 322 ms · 399 input tokens · $0.000017</code></pre></div
 <div class="block you"><span class="chip you">you type</span><pre><code>/rea-jev:investigate ./bin/Release/Licensing.dll where is the license key validated, and does it call native code?</code></pre></div>
 <p>Route: <code>managed_assembly</code> (a PE file with a CLI header, detected from the first bytes). First tool <code>inspect_managed_artifact</code>, then <code>inspect_managed_members</code> for CIL-level detail and <code>inspect_managed_native_boundaries</code> for P/Invoke declarations. Nothing is loaded or executed.</p>
 
-<h3>A live website</h3>
-<p>Start a Chrome-family browser with remote debugging and open the page yourself, then give Claude the loopback endpoint. A bare page URL is not enough; REA observes an existing browser, it does not navigate.</p>
+<h3 id="website">A live website</h3>
+<p>Start a Chrome-family browser with remote debugging and open the page yourself, then give Claude the loopback endpoint. A bare page URL is not enough; REA's passive tools observe an existing browser, they do not navigate.</p>
 <div class="block you"><span class="chip you">you type (terminal)</span><pre><code># macOS
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --remote-debugging-port=9222
 # Linux
@@ -304,6 +304,14 @@ google-chrome --remote-debugging-port=9222</code></pre></div>
 <p>Open the page in that browser window, then hand Claude the endpoint.</p>
 <div class="block you"><span class="chip you">you type (in Claude Code)</span><pre><code>/rea-jev:investigate http://127.0.0.1:9222 how does the checkout page compute the shipping estimate?</code></pre></div>
 <p>Route: <code>website_in_browser</code>. First tool <code>list_browser_targets</code>, then <code>inspect_web_page</code> and <code>analyze_web_bundle</code> for the selected page. Observation is passive: no clicks, no navigation, no script evaluation, and credentials, cookies, and raw request bodies are never retained. Use <code>http://127.0.0.1:9222</code> or <code>http://[::1]:9222</code>, not <code>localhost</code>: REA accepts only a literal loopback host with an explicit port and rejects anything else with a clear error. The plugin's gate is looser and only denies endpoints that would observe another machine.</p>
+<p><strong>A page load from the first request.</strong> The passive tools see only what happens after they attach, so they miss the requests a page makes while it loads, which is most of the answer to "which hosts does this page contact?". For that, ask Claude for a capture. <code>capture_browser_scenario</code> loads the page in a browser with an empty profile and records every request, and because it is a runtime capture the plugin's gate checks it against the declared target first, asking you only when it looks out of scope or risky. On landonorris.com it recorded 27 requests across eight hosts in 11.5 seconds, including the Rive animation runtime from <code>unpkg.com</code>, which the bundle analysis had not surfaced.</p>
+<p><strong>Behind a proxy, start the browser yourself.</strong> In launch mode, where REA starts its own Chromium, rea-agents 4.0.1 passes that browser only an allow-list of environment variables, and <code>HTTPS_PROXY</code>, <code>HTTP_PROXY</code> and <code>NO_PROXY</code> are not on it. On a machine that reaches the internet through a proxy, such as a cloud sandbox or a corporate network, the browser loads nothing and the capture fails with "Analysis could not complete"; retrying does not help. Connect mode works and keeps the empty profile. Start the browser from a shell that has the proxy variables, on <code>about:blank</code>, with a new profile, and read the tab's id:</p>
+<div class="block you"><span class="chip you">you type (terminal)</span><pre><code>google-chrome --headless=new --remote-debugging-port=9223 \
+  --remote-debugging-address=127.0.0.1 --user-data-dir="$(mktemp -d)" about:blank
+# add --no-sandbox only when running as root
+curl -s http://127.0.0.1:9223/json/list    # note the "id" of the about:blank page</code></pre></div>
+<div class="block you"><span class="chip you">you type (in Claude Code)</span><pre><code>capture a page load of https://example.com in connect mode on http://127.0.0.1:9223, target &lt;id&gt;; which hosts does it contact?</code></pre></div>
+<p>REA navigates the tab from <code>about:blank</code>, so the capture starts at the first request. The id comes from <code>/json/list</code> because <code>list_browser_targets</code> lists only HTTP(S) pages and leaves <code>about:blank</code> out. Stop the browser when the capture is done. A browser REA did not start is reported as <code>process_ownership: "external"</code>, and REA cannot guarantee its own viewport, locale, or timezone settings on it, so state the settings you launched with when a conclusion depends on them.</p>
 
 <h3>Two versions of the same app</h3>
 <div class="block you"><span class="chip you">you type</span><pre><code>/rea-jev:investigate ./releases/app-2.3.asar what changed in the sync engine compared with ./releases/app-2.4.asar?</code></pre></div>
@@ -418,6 +426,7 @@ google-chrome --remote-debugging-port=9222</code></pre></div>
   <dt>REA tools listed twice</dt><dd>You also ran <code>rea setup</code> for Claude Code. Keep one server: <code>claude mcp remove rea</code> for the global one, or disable the plugin's bundled server in the <code>/mcp</code> menu. The hooks match both forms.</dd>
   <dt><code>open_binary</code> reports no analysis engine</dt><dd>Native binaries need Hopper or Ghidra. <code>/rea-jev:setup</code> shows the exact install or environment-variable fix; <code>npx -y rea-agents@4.0.1 setup</code> can install Hopper with your consent.</dd>
   <dt>A gate "ask" you did not expect</dt><dd>Usually a runtime capture whose executable sits outside the project and the declared target, or a session with no declared target yet. Answer the prompt, or name the target in your request so the route records it.</dd>
+  <dt><code>capture_browser_scenario</code> fails with "Analysis could not complete"</dt><dd>Usually a machine behind an outbound proxy: in launch mode rea-agents 4.0.1 does not pass the proxy variables to the browser it starts, so the page never loads. Start a fresh-profile browser yourself and capture in connect mode; the steps are under <a href="#website">A live website</a>.</dd>
   <dt>Android APK</dt><dd>The dedicated Android tools are not in <code>rea-agents@4.0.1</code>. The skill inventories the package as an archive and routes the inner native libraries and bundled JavaScript; Dalvik code stays unknown until the pin is bumped.</dd>
 </dl>
 
