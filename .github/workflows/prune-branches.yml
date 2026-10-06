@@ -2,28 +2,34 @@ name: prune-branches
 
 # Deletes the claude/* branches Claude Code pushes once their pull request has
 # merged. Cloud sessions can push a branch but not delete one, so without this
-# every merged pull request leaves its branch behind. Squash merges leave no
-# ancestry to test, so a branch counts as merged only while its tip is still
-# the head of a merged pull request from this repository: a branch with later
-# commits, or one an open pull request uses, is kept. A deleted branch can be
-# restored from its pull request page.
+# every merged pull request leaves its branch behind. A merge deletes that pull
+# request's branch; installing or changing this file on the default branch, or
+# running it by hand, sweeps every merged one. Squash merges leave no ancestry
+# to test, so a branch counts as merged only while its tip is still the head of
+# a merged pull request from this repository: a branch with later commits, or
+# one an open pull request uses as head or base, is kept. A deleted branch can
+# be restored from its pull request page, and only a sweep would delete it
+# again.
 
 on:
   pull_request:
     types: [closed]
+  push:
+    branches: [main]
+    paths: [.github/workflows/prune-branches.yml]
   workflow_dispatch:
 
 permissions:
   contents: write
   pull-requests: read
 
-concurrency:
-  group: prune-branches
-  cancel-in-progress: false
-
 jobs:
   prune:
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    # A fork's pull request gets a read-only token and has no branch here.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.merged == true &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,15 +38,23 @@ jobs:
       - name: Delete merged claude/* branches
         env:
           GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_REF: ${{ github.event.pull_request.head.ref }}
+          PR_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           repo=$GITHUB_REPOSITORY
           # Read everything first, so a failed call stops the job instead of
           # looking like an empty list (an empty open list would drop a guard).
           heads=$(git ls-remote --heads origin)
-          open=$(gh api --paginate "repos/$repo/pulls?state=open&per_page=100" --jq '.[].head.ref')
-          merged=$(gh api --paginate "repos/$repo/pulls?state=closed&per_page=100" \
-            --jq '.[] | select(.merged_at != null) | [.number, (.head.repo.full_name // "-"), .head.ref, .head.sha] | @tsv')
+          open=$(gh api --paginate "repos/$repo/pulls?state=open&per_page=100" --jq '.[] | .head.ref, .base.ref')
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            merged=$(printf '%s\t%s\t%s\t%s\n' "$PR_NUMBER" "$PR_REPO" "$PR_REF" "$PR_SHA")
+          else
+            merged=$(gh api --paginate "repos/$repo/pulls?state=closed&per_page=100" \
+              --jq '.[] | select(.merged_at != null) | [.number, (.head.repo.full_name // "-"), .head.ref, .head.sha] | @tsv')
+          fi
 
           declare -A tip=() del=()
           while read -r sha ref; do
@@ -56,7 +70,7 @@ jobs:
               continue
             fi
             del[$ref]=$sha
-            echo "deleting $ref at $sha (merged in #$num)"
+            echo "$ref is at the head of merged #$num"
           done <<<"$merged"
 
           if [ ${#del[@]} -eq 0 ]; then
@@ -64,10 +78,23 @@ jobs:
             exit 0
           fi
           # The lease makes each delete conditional on the branch still being
-          # at the merged head, checked by GitHub at push time.
-          leases=() specs=()
+          # at the merged head, checked by GitHub at push time. Another run may
+          # have deleted it first, or someone may have pushed to it since; both
+          # are fine. Only a branch still at the merged head fails the job.
+          failed=0
           for ref in "${!del[@]}"; do
-            leases+=("--force-with-lease=refs/heads/$ref:${del[$ref]}")
-            specs+=(":refs/heads/$ref")
+            if git push --force-with-lease="refs/heads/$ref:${del[$ref]}" origin ":refs/heads/$ref"; then
+              echo "deleted $ref at ${del[$ref]}"
+              continue
+            fi
+            now=$(git ls-remote origin | awk -v r="refs/heads/$ref" '$2 == r { print $1 }')
+            if [ -z "$now" ]; then
+              echo "$ref was already deleted"
+            elif [ "$now" != "${del[$ref]}" ]; then
+              echo "kept $ref: it moved to $now"
+            else
+              echo "::error::could not delete $ref"
+              failed=1
+            fi
           done
-          git push "${leases[@]}" origin "${specs[@]}"
+          exit "$failed"

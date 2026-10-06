@@ -2,28 +2,16 @@ name: release
 
 # Creates the v<version> tag when a push to main changes the version in
 # package.json, so the CHANGELOG links resolve without anyone tagging by hand
-# (Claude Code cloud sessions cannot push tags). Run it manually with a tag and
-# a commit on main to backfill or repair one.
+# (Claude Code cloud sessions cannot push tags). The tag goes on the pushed
+# commit, which is main's tip.
 
 on:
   push:
     branches: [main]
     paths: [package.json]
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: Tag to create, such as v0.1.0
-        required: true
-      sha:
-        description: Full SHA of the commit on main to tag
-        required: true
 
 permissions:
   contents: write
-
-concurrency:
-  group: release
-  cancel-in-progress: false
 
 jobs:
   tag:
@@ -34,36 +22,20 @@ jobs:
           fetch-depth: 0
       - name: Create the tag
         env:
-          INPUT_TAG: ${{ inputs.tag }}
-          INPUT_SHA: ${{ inputs.sha }}
           BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
           version() {
             git show "$1:package.json" | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version'
           }
-          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
-            tag=$INPUT_TAG
-            sha=$INPUT_SHA
-          else
-            tag="v$(version "$GITHUB_SHA")"
-            sha=$GITHUB_SHA
-            if git cat-file -e "$BEFORE^{commit}" 2>/dev/null && [ "v$(version "$BEFORE")" = "$tag" ]; then
-              echo "version unchanged at $tag; nothing to tag"
-              exit 0
-            fi
+          tag="v$(version "$GITHUB_SHA")"
+          sha=$GITHUB_SHA
+          if git cat-file -e "$BEFORE^{commit}" 2>/dev/null && [ "v$(version "$BEFORE")" = "$tag" ]; then
+            echo "version unchanged at $tag; nothing to tag"
+            exit 0
           fi
-
           if ! [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::the tag must be v<major>.<minor>.<patch>"
-            exit 1
-          fi
-          if ! [[ $sha =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::the commit must be a full 40-character SHA"
-            exit 1
-          fi
-          if ! git merge-base --is-ancestor "$sha" refs/remotes/origin/main; then
-            echo "::error::$sha is not on main"
+            echo "::error::package.json version is not <major>.<minor>.<patch>"
             exit 1
           fi
           if have=$(git rev-parse -q --verify "refs/tags/$tag^{commit}"); then

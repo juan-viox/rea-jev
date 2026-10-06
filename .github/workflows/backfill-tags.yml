@@ -1,0 +1,40 @@
+name: backfill-tags
+
+# One-time: tags the three releases made before release.yml existed. It runs
+# from this pull request's branch while main still has the same workflow files
+# as the tagged commits, and is deleted again before the pull request merges.
+
+on:
+  push:
+    branches: [claude/repo-housekeeping]
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Tag v0.1.0, v0.1.1 and v0.1.2
+        run: |
+          set -euo pipefail
+          while read -r tag sha; do
+            git merge-base --is-ancestor "$sha" refs/remotes/origin/main
+            if have=$(git rev-parse -q --verify "refs/tags/$tag^{commit}"); then
+              if [ "$have" = "$sha" ]; then
+                echo "$tag already points at $sha"
+                continue
+              fi
+              echo "::error::$tag already exists at $have"
+              exit 1
+            fi
+            git push origin "$sha:refs/tags/$tag"
+            echo "tagged $sha as $tag"
+          done <<'PAIRS'
+          v0.1.0 c8ffdbda5ce9f69d46a1b7e03c57dce1a73487bf
+          v0.1.1 17f17a8f411bc787f204a55c6edeaac9f685bf0f
+          v0.1.2 e50ab253362c031fb4d22780ba2fb0cc28725660
+          PAIRS
