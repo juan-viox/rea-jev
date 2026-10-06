@@ -452,7 +452,7 @@ Order of evaluation; the first rule that fires decides.
    | `irreversible` | noul | "Could executing `tool_input` change, delete, or transmit data outside a temporary analysis directory, or affect anything other than the inspected program?" |
    | `runtime_requested` | noul | "Does `user_request` ask for, or clearly require, running or interacting with the program rather than static inspection?" |
 
-   Policy: `within_scope < T_GATE_SCOPE (0.3)` → `deny` (enforce, only when the answer is decisive: confidence ≥ 0.45, i.e. p ≤ 0.275) / `ask` (advise, or enforce with a near-coin-flip answer);
+   Policy: `within_scope < T_GATE_SCOPE (0.3)` → `deny` (enforce, only when the answer is decisive: confidence ≥ 0.45, i.e. p ≤ 0.275, and the session has a declared target) / `ask` (advise, or enforce with a near-coin-flip answer, or enforce with no declared target, since scope cannot be established without one);
    `irreversible > T_GATE_IRREV (0.8)` → `ask`; `runtime_requested < T_GATE_RUNTIME (0.3)` and tool is `capture_*` → `ask` ("the user did not ask for runtime execution; confirm before launching");
    otherwise silent (normal permission flow applies). Jev failure or a dropped (malformed) answer → silent.
 5. Everything else → silent. Inspection calls never cost a Jev request.

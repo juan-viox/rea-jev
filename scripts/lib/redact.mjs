@@ -88,8 +88,10 @@ export const SECRET_PATTERNS = Object.freeze(
       // pattern quadratic on long identifier runs). `pwd` is accepted as a
       // credential key (`db_pwd=`, SQL Server `Pwd=`) unless its value is a
       // filesystem path, which is the shell's `PWD`/`OLDPWD` variable.
+      // A `::` is a scope operator (`Name::member`), not an assignment: the
+      // separator is `=` or a single `:`, and the value may not begin with `:`.
       kind: 'kv',
-      re: /((?:password|passwd|secret|token|api[_-]?key|apikey|access[_-]?key|client[_-]?secret|sessionid|session|cookie|auth)(?:["']?\s*[=:]\s*["']?)|pwd(?:["']?\s*[=:]\s*["']?)(?![/~]))(?!\[REDACTED:)([^\s"'&,;}\])]{3,})/gi,
+      re: /((?:password|passwd|secret|token|api[_-]?key|apikey|access[_-]?key|client[_-]?secret|sessionid|session|cookie|auth)(?:["']?\s*(?:=|:(?!:))\s*["']?)|pwd(?:["']?\s*(?:=|:(?!:))\s*["']?)(?![/~]))(?!\[REDACTED:)(?!:)([^\s"'&,;}\])]{3,})/gi,
       replace: '$1[REDACTED:kv]',
     },
     {

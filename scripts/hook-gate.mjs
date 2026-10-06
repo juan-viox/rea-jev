@@ -12,7 +12,7 @@
  *   4. Jev gate, only for runtime-class tools and for extract/export/import
  *      with paths outside cwd: within_scope / irreversible / runtime_requested.
  *      A `deny` (enforce) needs the deciding answer at or above the `confirm`
- *      band; below it the decision degrades to `ask`.
+ *      band and a declared target; otherwise the decision degrades to `ask`.
  *   5. everything else → silent (normal permission flow)
  *
  * Decisions go to stdout as `hookSpecificOutput.permissionDecision`; the hook
@@ -175,8 +175,15 @@ async function main() {
   if (hasRequest && pScope !== null && pScope < tScope) {
     // A hard deny needs a decisive answer (confidence ≥ confirm band); a
     // near-coin-flip within_scope only asks, even in enforce.
-    const decision = m === 'enforce' && isDecisive(a.within_scope) ? 'deny' : 'ask';
-    return finish(decision, 'jev', `rea-jev: \`${tool}\` does not appear to act on the declared target (within_scope ${pScope.toFixed(2)}); ${decision === 'deny' ? 'keep runtime and extraction inside the artifact under investigation' : 'confirm it belongs to the investigation'}.`, extra);
+    // Without a declared target, scope cannot be established: the decision is the human's (ask).
+    const hasTarget = Boolean(summary.declaredTarget);
+    const decision = m === 'enforce' && hasTarget && isDecisive(a.within_scope) ? 'deny' : 'ask';
+    const why = decision === 'deny'
+      ? 'keep runtime and extraction inside the artifact under investigation'
+      : hasTarget
+        ? 'confirm it belongs to the investigation'
+        : 'no artifact has been declared for this investigation yet, so confirm it belongs to the investigation';
+    return finish(decision, 'jev', `rea-jev: \`${tool}\` does not appear to act on the declared target (within_scope ${pScope.toFixed(2)}); ${why}.`, extra);
   }
   if (pIrrev !== null && pIrrev > tIrrev) {
     return finish('ask', 'jev', `rea-jev: \`${tool}\` may change, delete, or transmit data beyond a temporary analysis directory (irreversible ${pIrrev.toFixed(2)}); confirm before running it.`, extra);

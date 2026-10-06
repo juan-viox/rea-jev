@@ -4,6 +4,23 @@ All notable changes to rea-jev are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] - 2026-10-06
+
+First run against the live TypeSafe API (`jev-1.13.0`): round trip 299 ms,
+hook latency p50 283 ms / p90 338 ms, 7,154 input tokens for a full fixture
+session (route, gate, evidence, stop) at an estimated $0.0003. Every hook
+behaved as designed; two defects surfaced and are fixed here.
+
+### Fixed
+
+- Redaction treated the scope operator in identifiers such as
+  `NetworkSession::send` as a credential assignment and masked the member
+  name. The key/value pattern now requires `=` or a single `:` as the
+  separator, and the value may not begin with `:`.
+- The gate could `deny` a runtime capture as out of scope in `enforce` mode
+  when the session had no declared target (an ambiguous route). Scope cannot
+  be established without a target, so that case now asks the user instead.
+
 ## [0.1.0] - 2026-10-06
 
 Initial release.

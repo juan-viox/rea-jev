@@ -42,6 +42,14 @@ describe('redact', () => {
     assert.equal(redact('Pwd=hunter2;'), 'Pwd=[REDACTED:kv];');
     assert.equal(redact('db_pwd=abc123'), 'db_pwd=[REDACTED:kv]');
   });
+  test('scope operators are not key/value pairs: `Name::member` identifiers stay intact', () => {
+    for (const s of ['NetworkSession::send', 'Auth::verify', 'Settings::Kind::Secret', 'KeychainStore::read -> Session::open()']) {
+      assert.equal(redact(s), s, s);
+      assert.equal(hasSecret(s), false, s);
+    }
+    assert.equal(redact('session: abcdef0123'), 'session: [REDACTED:kv]', 'a single colon separator is still an assignment');
+    assert.equal(redact('"Session": "abcdef"'), '"Session": "[REDACTED:kv]"');
+  });
   test('the shell variables PWD and OLDPWD and ordinary words are left alone', () => {
     for (const s of ['PWD=/home/user/project', 'OLDPWD=/tmp', 'PWD=~/work', 'author: Juan', 'the password policy', 'token count: 12']) {
       assert.equal(redact(s), s, s);

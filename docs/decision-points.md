@@ -146,7 +146,9 @@ Rules are evaluated in order; the first that fires decides.
    | `runtime_requested` | noul | Does `user_request` ask for, or clearly require, running or interacting with the program rather than static inspection? |
 
    **Policy:** `within_scope < T_GATE_SCOPE` → `deny` in `enforce` when the
-   answer is decisive (`p ≤ 0.275`), otherwise `ask` (always `ask` in `advise`).
+   answer is decisive (`p ≤ 0.275`) and the session has a declared target,
+   otherwise `ask` (always `ask` in `advise`, and always `ask` when no target
+   has been declared, since scope cannot be established without one).
    `irreversible > T_GATE_IRREV` → `ask`.
    `runtime_requested < T_GATE_RUNTIME` and the tool is a capture → `ask` ("the
    user did not ask for runtime execution; confirm before launching").
