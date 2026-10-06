@@ -27,6 +27,23 @@ The plugin's `sniff.mjs` applies these before Jev is asked; apply the same rules
 
 **Runtime captures** (`capture_process_scenario(executable)`, `observe_native_ui(pid, window_id)`, `capture_native_ui_scenario(pid, window_id, steps)`, `capture_browser_scenario`, `capture_electron_scenario`) are the only way to establish execution, timing, traffic, or live state. They run the declared target and nothing broader, are `runtime`-class for the gate (expect an `ask`), and are not a security sandbox. Native UI observation needs an active Mach-O target and macOS Accessibility/Screen Recording permission.
 
+### `capture_browser_scenario` behind an outbound proxy
+
+In launch mode (`browser: {"mode": "launch", "executable_path": …}`), rea-agents 4.0.1 starts Chromium with an allow-list of environment variables (`HOME`, `PATH`, `LANG`, `TMPDIR`, the display variables and a few more) that leaves out `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY`. On a host whose traffic must go through a proxy (a cloud sandbox, a corporate network) the launched browser cannot reach the site, and the call fails with a bare `execution_failure` ("Analysis could not complete"); retrying does not help. Use connect mode against a browser you start yourself, which keeps the fresh-profile guarantee:
+
+1. Start Chromium from a shell that has the proxy variables, with a new empty profile, on `about:blank`, with a loopback debugging port. Add `--no-sandbox` only when the host runs as root.
+
+   ```bash
+   chrome --headless=new --remote-debugging-port=9223 --remote-debugging-address=127.0.0.1 \
+     --user-data-dir="$(mktemp -d)" about:blank
+   ```
+
+2. Read the `about:blank` page's `id` from `http://127.0.0.1:9223/json/list`. `list_browser_targets` will not show it: it lists only pages with HTTP(S) URLs and counts `about:blank` under `unsupported_url`.
+3. Call `capture_browser_scenario` with `browser: {"mode": "connect", "cdp_endpoint": "http://127.0.0.1:9223", "target_id": "<that id>"}` and the real `start_url`. REA navigates from `about:blank` as the scenario's first step, so the requests the page makes from the first byte are recorded.
+4. Stop that browser when the capture is done.
+
+Connect mode reports `process_ownership: "external"`. As its limitations say, REA cannot guarantee launch-time context options (viewport, locale, timezone, service-worker blocking) on a browser it did not start, so state the settings you launched with when they matter to a conclusion.
+
 ## Ask when ambiguous
 
 Ask the user before opening anything when any of these holds: the route note's `target_kind` confidence is below 0.5 or its choice is `unknown_or_missing`; two target kinds each carry more than about 0.25 probability; a human-readable app name resolves to more than one installed artifact; or no path, URL, or endpoint exists on disk or on the network. List the candidates you found and let the user pick. Never choose an example app on the user's behalf, and never bind a second native session to "see what happens". When a tool you expect is unavailable for the bound target, call `binary_session` with `{}` and read `tool_availability` for the reason and remediation instead of guessing another route.

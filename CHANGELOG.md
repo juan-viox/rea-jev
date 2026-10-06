@@ -4,6 +4,21 @@ All notable changes to rea-jev are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.3] - 2026-10-06
+
+### Added
+
+- Skill guidance for `capture_browser_scenario` behind an outbound proxy,
+  found while capturing landonorris.com from a cloud sandbox. In launch mode
+  rea-agents 4.0.1 starts Chromium with an environment allow-list that leaves
+  out `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY`, so the browser cannot reach
+  the site and the call fails with a bare `execution_failure` (reproduced: the
+  same Chromium with REA's allow-list loads nothing, with the proxy variables
+  it loads the page). The route table now gives the connect-mode workaround: a
+  browser you start on `about:blank` with a fresh profile, its target id read
+  from `/json/list` (`list_browser_targets` does not list `about:blank`), and
+  REA navigating from the first byte. `SKILL.md` points to it.
+
 ## [0.1.2] - 2026-10-06
 
 Two false positives found while reverse-engineering a live website with the
@@ -98,3 +113,4 @@ Initial release.
 [0.1.0]: https://github.com/juan-viox/rea-jev/releases/tag/v0.1.0
 [0.1.1]: https://github.com/juan-viox/rea-jev/compare/v0.1.0...v0.1.1
 [0.1.2]: https://github.com/juan-viox/rea-jev/compare/v0.1.1...v0.1.2
+[0.1.3]: https://github.com/juan-viox/rea-jev/compare/v0.1.2...v0.1.3
