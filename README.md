@@ -36,6 +36,8 @@ hooks and a `jev` CLI (System 1), REA's MCP server pinned to one version, two
 subagents (`rea-investigator`, `rea-verifier`), and two commands
 (`/rea-jev:setup`, `/rea-jev:investigate`). [docs/architecture.md](docs/architecture.md)
 has the full picture; [DESIGN.md](DESIGN.md) is the authoritative spec.
+[docs/user-guide.html](docs/user-guide.html) is the user guide, with recorded
+examples for every target type.
 
 ## Install
 
