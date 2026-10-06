@@ -1,0 +1,16 @@
+# dependencies (none at runtime; dev tooling only)
+node_modules/
+
+# OS
+.DS_Store
+
+# logs
+*.log
+
+# local secrets and env files
+.env
+.env.*
+
+# rea-jev runtime data (never commit decision logs or session ledgers)
+decisions.jsonl
+sessions/

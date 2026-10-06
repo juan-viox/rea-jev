@@ -1,0 +1,20 @@
+{
+  "session_id": "fixture-session",
+  "transcript_path": "/path/to/transcript.jsonl",
+  "cwd": "/path/to/project",
+  "hook_event_name": "PostToolUse",
+  "permission_mode": "default",
+  "tool_name": "mcp__plugin_rea-jev_rea__open_binary",
+  "tool_input": {
+    "path": "/Applications/Sample.app"
+  },
+  "tool_use_id": "toolu_10_open_binary",
+  "tool_response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n \"result\": {\n  \"document\": \"Sample\",\n  \"path\": \"/Applications/Sample.app/Contents/MacOS/Sample\",\n  \"provider\": {\n   \"id\": \"hopper\",\n   \"version\": \"5.17.4\"\n  },\n  \"format\": \"macho\",\n  \"architectures\": [\n   \"arm64\",\n   \"x86_64\"\n  ],\n  \"selected_architecture\": \"arm64\",\n  \"code_signature\": {\n   \"present\": true,\n   \"team_id\": \"ABCDE12345\"\n  },\n  \"limitations\": [\n   \"Swift metadata was not fully demangled; 212 symbols keep mangled names.\",\n   \"Objective-C protocol conformance tables beyond the first 4096 entries were not indexed.\"\n  ]\n },\n \"evidence_id\": \"ev_5c353ae2c7ea033dbf038fa9c5d81d6b64223dd4f3cefaf09446796af51f8644\",\n \"evidence\": {\n  \"kind\": \"session.open_binary\",\n  \"normalized_result\": {\n   \"document\": \"Sample\",\n   \"format\": \"macho\"\n  }\n }\n}"
+      }
+    ]
+  }
+}

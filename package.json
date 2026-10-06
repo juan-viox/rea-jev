@@ -1,0 +1,56 @@
+{
+  "name": "rea-jev",
+  "version": "0.1.0",
+  "description": "Claude Code plugin that pairs REA (Reverse Engineer Anything, rea-agents) with TypeSafe's Jev System One decision model: hooks route the target, gate risky REA calls, score evidence, and check completeness; a jev CLI lets the agent rank, classify, and verify.",
+  "type": "module",
+  "private": false,
+  "license": "MIT",
+  "author": {
+    "name": "Juan Alvarado",
+    "url": "https://github.com/juan-viox"
+  },
+  "homepage": "https://github.com/juan-viox/rea-jev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/juan-viox/rea-jev.git"
+  },
+  "keywords": [
+    "reverse-engineering",
+    "rea",
+    "rea-agents",
+    "jev",
+    "typesafe",
+    "system-one",
+    "claude-code",
+    "plugin",
+    "hooks",
+    "mcp"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "rea-jev": "scripts/jev.mjs"
+  },
+  "scripts": {
+    "test": "node --test \"tests/*.test.mjs\"",
+    "validate": "node scripts/validate.mjs",
+    "catalog": "node scripts/validate.mjs --write-catalog"
+  },
+  "files": [
+    ".claude-plugin",
+    ".mcp.json",
+    "agents",
+    "commands",
+    "data",
+    "docs",
+    "hooks",
+    "scripts",
+    "skills",
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md"
+  ],
+  "dependencies": {},
+  "devDependencies": {}
+}

@@ -1,0 +1,16 @@
+{
+  "session_id": "fixture-session",
+  "transcript_path": "/path/to/transcript.jsonl",
+  "cwd": "/path/to/project",
+  "hook_event_name": "PreToolUse",
+  "permission_mode": "default",
+  "tool_name": "mcp__plugin_rea-jev_rea__capture_process_scenario",
+  "tool_input": {
+    "executable": "/opt/unrelated/bin/other-tool",
+    "arguments": [
+      "--selftest"
+    ],
+    "timeout_ms": 5000
+  },
+  "tool_use_id": "toolu_04_capture_process"
+}

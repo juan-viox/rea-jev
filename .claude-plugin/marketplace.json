@@ -1,0 +1,26 @@
+{
+  "name": "rea-jev",
+  "description": "REA (Reverse Engineer Anything) paired with TypeSafe's Jev System One model: a System 1 reflex layer of hooks around Claude Code's reverse-engineering work.",
+  "owner": {
+    "name": "Juan Alvarado",
+    "url": "https://github.com/juan-viox"
+  },
+  "plugins": [
+    {
+      "name": "rea-jev",
+      "source": "./",
+      "description": "Reverse-engineer native binaries, Electron/JavaScript apps, .NET assemblies, Android packages, and live sites with REA, while Jev routes the target, gates risky calls, scores evidence, and checks completeness.",
+      "category": "security",
+      "tags": [
+        "reverse-engineering",
+        "rea",
+        "jev",
+        "typesafe",
+        "system-one",
+        "hooks",
+        "mcp",
+        "evidence"
+      ]
+    }
+  ]
+}
