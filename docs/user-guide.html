@@ -322,7 +322,7 @@ curl -s http://127.0.0.1:9223/json/list    # note the "id" of the about:blank pa
 <p>The route note shows <code>build after</code> near 1.0, and the skill's reconstruction rules apply: Claude lists what the original demonstrably does (observed, with Evidence IDs), what it infers, and what remains unknown; then it separates behavior the port must preserve from choices it may make differently, and only then writes code with its normal tools. REA's <code>verify_reconstruction</code> can check a finite list of comparable claims afterwards.</p>
 
 <h2 id="clients">Client projects</h2>
-<p>Paid work with this plugin rarely starts with curiosity about an app. It starts with a client who owns, licenses, or operates a piece of software and needs something from it: a rebuild, a migration, an audit, a comparison, a format they can read. The loop is the same as above, and so is where the time goes: Hopper or Ghidra analysis of large binaries, and reading the few results that matter. What changes is the paperwork around it and the shape of what you hand back. The seven engagements below are composites of common requests, each with the exact prompt, the tools the skill reaches for, and the deliverable. Three of them end with the trap that most often catches people.</p>
+<p>Paid work with this plugin rarely starts with curiosity about an app. It starts with a client who owns, licenses, or operates a piece of software and needs something from it: a rebuild, a migration, an audit, a comparison, a format they can read. The loop is the same as above, and so is where the time goes: Hopper or Ghidra analysis of large binaries, and reading the few results that matter. What changes is the paperwork around it and the shape of what you hand back. The seven engagements below are composites of common requests, each with the exact prompt, the tools the skill reaches for, and the deliverable. Three of them end with the trap that most often catches people. VioX AI takes on the same seven engagements as a service; the offer, how the work is done, and a quote request are at <a href="https://viox.ai/services">viox.ai/services</a>.</p>
 <div class="callout">
   <p><strong>Get four things in writing before the first tool call.</strong></p>
   <ol>
@@ -444,6 +444,7 @@ curl -s http://127.0.0.1:9223/json/list    # note the "id" of the about:blank pa
   <li><a href="https://github.com/juan-viox/rea-jev">github.com/juan-viox/rea-jev</a>: the plugin, with <code>DESIGN.md</code> as the specification and <code>docs/decision-points.md</code> as the full question catalog with thresholds.</li>
   <li><a href="https://github.com/morluto/rea">github.com/morluto/rea</a>: REA, Reverse Engineer Anything. Its own skill, <code>reverse-engineer-anything</code>, remains the canonical tool-by-tool guide.</li>
   <li><a href="https://docs.typesafe.ai/">docs.typesafe.ai</a>: Jev, the System 1 model, its three question types, and how confidence is computed.</li>
+  <li><a href="https://viox.ai/services">viox.ai/services</a>: the <a href="#clients">client-project engagements</a> run by VioX AI as a service, with a quote request.</li>
   <li>Inside Claude Code: <code>/rea-jev:setup</code>, <code>/rea-jev:investigate</code>, and the skill <code>/rea-jev:reverse-engineer</code>.</li>
 </ul>
 
