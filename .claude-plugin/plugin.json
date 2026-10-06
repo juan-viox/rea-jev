@@ -1,6 +1,6 @@
 {
   "name": "rea-jev",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Reverse-engineer anything with REA's MCP tools, guided by TypeSafe's Jev System One model: routes the target before Claude thinks, gates risky REA calls, scores every result as evidence, and checks completeness before a turn ends.",
   "author": {
     "name": "Juan Alvarado",
