@@ -4,7 +4,10 @@
  *
  * 1. Deterministic pre-filter (free): the prompt hits the RE keyword regex, a
  *    path token exists on disk, a URL/CDP/inspector endpoint is present, or the
- *    ledger already shows REA activity in this session. Otherwise: silent.
+ *    ledger already shows REA activity in this session. Otherwise: silent. A
+ *    harness envelope (the whole prompt is a `<task-notification>`, an
+ *    `<agent-message>` or similar host markup) is silent before that and writes
+ *    no ledger event, so the declared target carries forward untouched.
  * 2. One Jev call with six questions (is_re_task, target_kind, workflow, scope,
  *    needs_runtime, wants_build).
  * 3. Policy: not an RE task → silent; ambiguous target → ask the user which
@@ -25,7 +28,7 @@ import { askJev, confidenceOf, topChoices, noul, choice, score, resolveTimeoutMs
 import { excerpt } from './lib/redact.mjs';
 import { readEvents, summarize, appendEvent, logDecision } from './lib/ledger.mjs';
 import { describeFirstTool } from './lib/rea.mjs';
-import { sniffPrompt } from './lib/sniff.mjs';
+import { sniffPrompt, isHarnessEnvelope } from './lib/sniff.mjs';
 
 /** Hard ceiling for the whole hook, under the 10 s hooks.json timeout. */
 const SAFETY_MS = 9000;
@@ -212,6 +215,10 @@ async function main() {
 
   const prompt = typeof input.prompt === 'string' ? input.prompt : '';
   if (!prompt.trim()) return exitSilently(0);
+  if (isHarnessEnvelope(prompt)) {
+    debug('route: harness envelope, not a user prompt; silent');
+    return exitSilently(0);
+  }
   const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : process.cwd();
   const sessionId = String(input.session_id ?? 'unknown');
 

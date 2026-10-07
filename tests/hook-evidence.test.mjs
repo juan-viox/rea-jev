@@ -98,6 +98,16 @@ describe('ledger and parsing', () => {
     assert.deepEqual(e.limitations, ['a.js (not analyzed)', 'b', 'top']);
     assert.deepEqual(e.unknowns, ['b']);
   });
+  test('parseReaResult renders a completeness gap as a limitation sentence ahead of the fixed disclaimers; complete statuses and nested data are ignored', () => {
+    const incomplete = JSON.stringify({ result: { completeness: { status: 'incomplete', equality_eligible: false, missing_sections: ['events'], truncated_sections: [] }, limitations: ['Response bodies are not retained.'] }, evidence_id: `ev_${'d'.repeat(64)}` });
+    assert.deepEqual(parseReaResult({ content: [{ type: 'text', text: incomplete }] }).limitations, ['completeness incomplete; missing_sections: events', 'Response bodies are not retained.']);
+    const complete = JSON.stringify({ result: { completeness: { status: 'complete_within_window', truncated_sections: [] }, limitations: ['x'] } });
+    assert.deepEqual(parseReaResult({ content: [{ type: 'text', text: complete }] }).limitations, ['x']);
+    const nested = JSON.stringify({ result: { data: { completeness: { status: 'incomplete', missing_sections: ['everything'] } } } });
+    assert.deepEqual(parseReaResult({ content: [{ type: 'text', text: nested }] }).limitations, []);
+    const filtered = JSON.stringify({ completeness: { status: 'policy_filtered', policy_filtered_sections: ['scripts'], unavailable_sections: ['storage_keys'] } });
+    assert.deepEqual(parseReaResult({ content: [{ type: 'text', text: filtered }] }).limitations, ['completeness policy_filtered; unavailable_sections: storage_keys'], 'sections filtered by the caller\'s own policy vary with the input and are left out');
+  });
   test('parseReaResult caps Evidence IDs at EVIDENCE_IDS_MAX and reports the full count; empty responses are flagged', () => {
     const ids = Array.from({ length: 100 }, (_, i) => `ev_${i.toString(16).padStart(64, '0')}`);
     const r = parseReaResult({ content: [{ type: 'text', text: ids.join(' ') }] });
@@ -301,6 +311,68 @@ describe('Jev evidence notes', () => {
     const r = await runHook('hook-evidence', payload('post-analyze-javascript-application.json', { session_id: session }), env());
     assert.equal(context(r), 'rea-jev: result carries a limitation worth tracking: `vendor/wasm-loader.js (WebAssembly module not analyzed)`. Record it with `record_unknown` if it affects a conclusion.');
     assert.deepEqual(lastPost(session).notes, ['unknown_candidate']);
+  });
+  test('the unrecorded_unknown question asks for a gap specific to this result and names standing disclaimers as false', async () => {
+    const before = fake.requests.length;
+    const session = newSession('evidence');
+    seedLedger(tmp, session, [routeEvent]);
+    script(QUIET);
+    await runHook('hook-evidence', payload('post-search-strings.json', { session_id: session }), env());
+    const q = fake.requests[before].body.questions.unrecorded_unknown;
+    assert.match(q.instructions, /specific to this result/);
+    assert.match(q.criteria.true, /could not/);
+    assert.match(q.criteria.false, /coverage is complete/);
+  });
+  test('a limitation the session ledger has already seen is not flagged again; a new one is quoted even when it is not first', async () => {
+    const session = newSession('evidence');
+    seedLedger(tmp, session, [routeEvent]);
+    script({ ...QUIET, unrecorded_unknown: 0.9 });
+    const first = await runHook('hook-evidence', payload('post-analyze-javascript-application.json', { session_id: session }), env());
+    assert.match(context(first), /vendor\/wasm-loader\.js/);
+    const recorded = lastPost(session).limitations;
+    assert.ok(recorded.length >= 2, 'the fixture carries several limitations');
+
+    // The same limitations again (the gate, not this hook, stops identical calls).
+    const again = await runHook('hook-evidence', payload('post-analyze-javascript-application.json', { session_id: session }), env());
+    assert.equal(again.code, 0, again.stderr);
+    assert.equal(again.stdout, '', 'no repeat note');
+    const post = lastPost(session);
+    assert.deepEqual(post.notes, []);
+    assert.ok(Math.abs(post.answers.unrecorded_unknown.noul - 0.9) < 1e-6, 'the answer is still recorded');
+
+    // A session whose earlier note covered every limitation but the last one is told about that one.
+    const partial = newSession('evidence');
+    seedLedger(tmp, partial, [routeEvent, { kind: 'post', tool: 'analyze_javascript_application', input_hash: 'sha256:other', ok: true, evidence_ids: [], limitations: recorded.slice(0, -1), notes: ['unknown_candidate'], bytes: 10 }]);
+    const r = await runHook('hook-evidence', payload('post-analyze-javascript-application.json', { session_id: partial }), env());
+    assert.equal(context(r), `rea-jev: result carries a limitation worth tracking: \`${recorded.at(-1)}\`. Record it with \`record_unknown\` if it affects a conclusion.`);
+    assert.deepEqual(lastPost(partial).notes, ['unknown_candidate']);
+  });
+  test('a limitation recorded while Jev was unavailable stays fresh: the note comes on the next judged result', async () => {
+    const session = newSession('evidence');
+    seedLedger(tmp, session, [routeEvent]);
+    const failed = await runHook('hook-evidence', payload('post-analyze-javascript-application.json', { session_id: session }), hookEnv({ fakeUrl: fake500.url, home: tmp }));
+    assert.equal(failed.stdout, '');
+    assert.ok(lastPost(session).limitations.length >= 2, 'limitations recorded, no note');
+    script({ ...QUIET, unrecorded_unknown: 0.9 });
+    const r = await runHook('hook-evidence', payload('post-analyze-javascript-application.json', { session_id: session, tool_input: { input_path: '/Applications/Other.app/Contents/Resources/app.asar' } }), env());
+    assert.match(context(r) ?? '', /vendor\/wasm-loader\.js/);
+    assert.deepEqual(lastPost(session).notes, ['unknown_candidate']);
+  });
+  test('two captures with the same fixed disclaimers: the one that reports a missing section gets a note naming it', async () => {
+    const session = newSession('evidence');
+    seedLedger(tmp, session, [routeEvent]);
+    const capture = (status, missing) => ({
+      content: [{ type: 'text', text: JSON.stringify({ result: { completeness: { status, missing_sections: missing, truncated_sections: [] }, steps: [{ action: 'navigate', url: 'https://example.com/' }], limitations: ['Response bodies are not retained.', 'Event sequence records provider receipt order; simultaneous browser causality is not inferred.'], padding: 'x'.repeat(500) }, evidence_id: `ev_${'e'.repeat(64)}` }) }],
+    });
+    const base = payload('post-search-strings.json', { session_id: session, tool_name: 'mcp__plugin_rea-jev_rea__capture_browser_scenario' });
+    script({ ...QUIET, unrecorded_unknown: 0.9 });
+    const first = await runHook('hook-evidence', { ...base, tool_input: { target_id: 'A' }, tool_response: capture('complete', []) }, env());
+    assert.equal(context(first), 'rea-jev: result carries a limitation worth tracking: `Response bodies are not retained.`. Record it with `record_unknown` if it affects a conclusion.');
+    script({ ...QUIET, unrecorded_unknown: 0.95 });
+    const second = await runHook('hook-evidence', { ...base, tool_input: { target_id: 'B' }, tool_response: capture('incomplete', ['events']) }, env());
+    assert.equal(context(second), 'rea-jev: result carries a limitation worth tracking: `completeness incomplete; missing_sections: events`. Record it with `record_unknown` if it affects a conclusion.');
+    const third = await runHook('hook-evidence', { ...base, tool_input: { target_id: 'C' }, tool_response: capture('incomplete', ['events']) }, env());
+    assert.equal(third.stdout, '', 'the same gap again is withheld');
   });
   test('claims_runtime 0.9 → note for a static tool, nothing for a runtime tool (the question is not even asked)', async () => {
     script({ ...QUIET, claims_runtime: 0.9 });
