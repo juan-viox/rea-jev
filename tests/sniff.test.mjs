@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { sniffPrompt, magicOf, dirKind, isLoopback, extractEndpoints, safeUrl, KEYWORD_RE, describePath, targetKindFor } from '../scripts/lib/sniff.mjs';
+import { sniffPrompt, magicOf, dirKind, isLoopback, extractEndpoints, safeUrl, KEYWORD_RE, describePath, targetKindFor, isHarnessEnvelope } from '../scripts/lib/sniff.mjs';
 
 // All fixtures are built at runtime in a temp dir; nothing binary is committed.
 let dir;
@@ -216,6 +216,49 @@ describe('sniffPrompt', () => {
     assert.equal(t.exists, false);
     assert.equal(t.targetKind, 'android_apk');
     assert.equal(targetKindFor({ exists: true, isDir: true, ext: 'app', magic: null }), null);
+  });
+  test('XML tag names are not paths; a path inside an element still is', () => {
+    const s = sniffPrompt('<task-notification>\n<task-id>abc</task-id>\n<output-file>/nope/tasks/abc.output</output-file>\n<status>completed</status>\n</task-notification>', dir);
+    assert.deepEqual(
+      s.pathTokens.map((t) => t.raw),
+      ['/nope/tasks/abc.output'],
+    );
+  });
+  test('a leading slash command is not a path; what follows it still is', () => {
+    const s = sniffPrompt('/rea-jev:reverse-engineer https://example.com/app', dir);
+    assert.deepEqual(s.pathTokens, []);
+    assert.deepEqual(s.urls, ['https://example.com/app']);
+    assert.deepEqual(s.hints, ['url https://example.com/app']);
+    assert.deepEqual(sniffPrompt('/reverse-engineer ~/nothing.dylib', dir).pathTokens.map((t) => t.raw), ['~/nothing.dylib']);
+    assert.deepEqual(sniffPrompt('/Applications/Notes.app is the target', dir).pathTokens.map((t) => t.raw), ['/Applications/Notes.app'], 'a path, not a command');
+    assert.deepEqual(sniffPrompt('open /nope.app', dir).pathTokens.map((t) => t.raw), ['/nope.app'], 'only the first token can be a command');
+  });
+});
+
+describe('isHarnessEnvelope', () => {
+  test('whole-prompt envelopes the host injects', () => {
+    for (const p of [
+      '<task-notification>\n<task-id>w3a37azco</task-id>\n<status>completed</status>\n</task-notification>',
+      '<agent-message from="aad0cbcc6044d3cea">\n[Subagent hand-back] The report.\n</agent-message>',
+      '<command-message>workflow-authoring</command-message>\n<command-name>workflow-authoring</command-name>\n<command-args></command-args>',
+      '  <system-reminder>\nThe user opened the file.\n</system-reminder>\n',
+      '<local-command-stdout>ok</local-command-stdout>',
+    ]) {
+      assert.equal(isHarnessEnvelope(p), true, p.slice(0, 40));
+    }
+  });
+  test('a user prompt is not an envelope, even when it quotes or mentions tags', () => {
+    for (const p of [
+      'how does the sync feature in Notes.app work?',
+      'decompile this: <manifest package="x"/> says the app id',
+      '<binary> is what the docs call it; where is the loader?',
+      'analyze <task-notification>…</task-notification> and tell me what it is', // ends with text
+      '/rea-jev:reverse-engineer https://example.com/',
+      '',
+      null,
+    ]) {
+      assert.equal(isHarnessEnvelope(p), false, String(p).slice(0, 40));
+    }
   });
 });
 

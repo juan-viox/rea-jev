@@ -285,7 +285,9 @@ export function harnessOversizeNotice(text) {
  * nested artifact data (a plist or package.json echoed by REA may carry an
  * `unknowns` key of its own): the keys `limitations`, `limitation`,
  * `residual_unknowns`, `unknowns`, and `coverage.*unknown*` at the top level,
- * under `result`, and under `result.coverage` / `coverage` (≤ 40 items).
+ * under `result`, and under `result.coverage` / `coverage` (≤ 40 items), plus
+ * a `completeness` object whose status is not complete, rendered as one
+ * sentence (`completeness incomplete; missing_sections: events`).
  * `unknowns` holds the subset that came from the two unknown keys. `empty` is
  * true when there was no response at all (null, '', `{}`, `[]`, or content
  * with no text), which the evidence hook records as a failed call so the
@@ -389,6 +391,7 @@ function collectContainer(node, ctx, { isCoverage, isRoot }) {
     if (key === 'limitations' || key === 'limitation') collect(v, ctx.limitations, ctx);
     else if (key === 'residual_unknowns' || key === 'unknowns') collect(v, ctx.unknowns, ctx, ctx.limitations);
     else if (isCoverage && /unknown/i.test(key)) collect(v, ctx.limitations, ctx);
+    else if (!isCoverage && key === 'completeness' && isObj(v)) collect(completenessGap(v), ctx.limitations, ctx);
     else if (!isCoverage && key === 'coverage' && isObj(v)) collectContainer(v, ctx, { isCoverage: true, isRoot: false });
     else if (isRoot && key === 'result' && isObj(v)) collectContainer(v, ctx, { isCoverage: false, isRoot: false });
   }
@@ -396,6 +399,28 @@ function collectContainer(node, ctx, { isCoverage, isRoot }) {
 
 function isObj(v) {
   return v != null && typeof v === 'object' && !Array.isArray(v);
+}
+
+const COMPLETE_STATUSES = new Set(['complete', 'complete_within_window']);
+/** Sections named under these keys are what the result could not include. */
+const COMPLETENESS_GAP_KEYS = ['missing_sections', 'truncated_sections', 'unavailable_sections'];
+
+/**
+ * One sentence for a `completeness` object whose status is not complete
+ * (`completeness incomplete; missing_sections: events`), or null. Sections
+ * filtered by the caller's own policy (`policy_filtered_sections`,
+ * `excluded`) are left out: they vary with the input, not with what the tool
+ * could do, and would make every page look like a new gap.
+ */
+function completenessGap(c) {
+  const status = typeof c.status === 'string' ? c.status.trim() : '';
+  if (!status || COMPLETE_STATUSES.has(status)) return null;
+  const parts = [`completeness ${status}`];
+  for (const k of COMPLETENESS_GAP_KEYS) {
+    const names = Array.isArray(c[k]) ? c[k].filter((s) => typeof s === 'string' && s).slice(0, 6) : [];
+    if (names.length) parts.push(`${k}: ${names.join(', ')}`);
+  }
+  return parts.join('; ');
 }
 
 function collect(value, list, ctx, mirror) {

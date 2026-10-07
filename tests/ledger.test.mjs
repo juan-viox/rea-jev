@@ -24,6 +24,15 @@ const RE = { kind: 'route', prompt_excerpt: 'How does export work in Sample.app?
 const FOLLOW_UP = { kind: 'route', prompt_excerpt: 'thanks, format that as a table', prompt_for_jev: 'thanks, format that as a table', answers: { is_re_task: { type: 'noul', noul: 0.05 } }, declared_target: '/Applications/Sample.app', decision: 'silent' };
 
 describe('summarize', () => {
+  test('limitationsNoted holds only the limitations of posts that carried an unknown_candidate note', () => {
+    const s = summarize([
+      { kind: 'post', tool: 'open_binary', ok: true, limitations: ['a'], evidence_ids: [], bytes: 1 },
+      { kind: 'post', tool: 'inspect_web_page', ok: true, limitations: ['b', 'c'], notes: ['unknown_candidate'], evidence_ids: [], bytes: 1 },
+      { kind: 'post', tool: 'inspect_web_page', ok: true, limitations: ['d'], notes: ['low_relevance'], evidence_ids: [], bytes: 1 },
+    ]);
+    assert.deepEqual(s.limitationsFlagged, ['a', 'b', 'c', 'd']);
+    assert.deepEqual(s.limitationsNoted, ['b', 'c']);
+  });
   test('lastReRoute / userRequest skip non-RE follow-ups; lastRoute and declaredTarget still see them', () => {
     const s = summarize([RE, FOLLOW_UP]);
     assert.equal(s.lastRoute, FOLLOW_UP);

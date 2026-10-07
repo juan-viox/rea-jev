@@ -33,7 +33,12 @@ export const KEYWORD_RE = (() => {
 
 const MAX_TOKENS = 16;
 const EXT_ALT = TARGET_EXTENSIONS.join('|');
-const UNQUOTED_PATH_RE = /(?<![\w@:/.\-~])((?:~|\.{1,2})?\/[^\s"'`<>|;()[\]{}]+)/g;
+/** `<` in the lookbehind keeps a closing XML tag (`</task-id>`) from reading as the path `/task-id`. */
+const UNQUOTED_PATH_RE = /(?<![\w@:/.\-~<])((?:~|\.{1,2})?\/[^\s"'`<>|;()[\]{}]+)/g;
+/** A leading slash command (`/name`, `/plugin:name`): one segment, no dot, nothing but whitespace after it. */
+const SLASH_COMMAND_RE = /^\s*\/[A-Za-z][\w-]*(?::[A-Za-z][\w-]*)?(?=\s|$)/;
+/** A prompt that is one or more XML elements and nothing else: the host's own envelopes, not the user's words. */
+const ENVELOPE_RE = /^\s*<[a-z][\w-]*(?:\s[^<>]*)?>[\s\S]*<\/[a-z][\w-]*>\s*$/i;
 const QUOTED_RE = /"([^"\n]{2,400})"|'([^'\n]{2,400})'|`([^`\n]{2,400})`/g;
 const BARE_FILE_RE = new RegExp(`(?<![\\w/.\\-])([\\w][\\w.\\-]*\\.(?:${EXT_ALT}))(?![\\w\\-]|\\.\\w)`, 'gi');
 const URL_RE = /\b(?:https?|wss?):\/\/[^\s"'<>`)\]]+/gi;
@@ -102,6 +107,19 @@ export function sniffPrompt(prompt, cwd = process.cwd()) {
   const firstExisting = out.pathTokens.find((t) => t.exists);
   out.declaredTarget = firstExisting ? firstExisting.abs : out.urls[0] ?? null;
   return out;
+}
+
+/**
+ * True when the whole prompt is markup the host injected rather than text the
+ * user typed: a task notification, a subagent hand-back, or similar markup
+ * the host injects. Such a prompt starts with an XML element and
+ * ends with a closing tag; a user prompt that merely quotes a tag does not.
+ *
+ * @param {unknown} prompt
+ * @returns {boolean}
+ */
+export function isHarnessEnvelope(prompt) {
+  return typeof prompt === 'string' && ENVELOPE_RE.test(prompt);
 }
 
 /**
@@ -377,10 +395,12 @@ function extractPathCandidates(text) {
     const cleaned = stripTrailingPunct(String(raw ?? '').trim());
     if (cleaned && cleaned.length <= 1024 && !found.includes(cleaned)) found.push(cleaned);
   };
+  // A leading slash command is how the prompt was invoked, not a path.
+  const base = text.replace(SLASH_COMMAND_RE, (m) => ' '.repeat(m.length));
   // Quoted paths first; their spans are blanked so the unquoted and bare
   // scans below cannot re-match fragments of them.
-  let rest = text;
-  for (const m of text.matchAll(QUOTED_RE)) {
+  let rest = base;
+  for (const m of base.matchAll(QUOTED_RE)) {
     const inner = m[1] ?? m[2] ?? m[3];
     if (inner && looksLikePath(inner)) {
       push(inner);

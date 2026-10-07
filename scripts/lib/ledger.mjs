@@ -184,6 +184,10 @@ export function readDecisions(opts = {}) {
  * so a "thanks, format that as a table" follow-up never becomes the question
  * the evidence, gate and stop hooks judge against.
  *
+ * `limitationsNoted` is the subset of `limitationsFlagged` that came from
+ * posts carrying an `unknown_candidate` note: the limitations the agent was
+ * told about, as opposed to merely recorded.
+ *
  * @param {LedgerEvent[]} events
  * @param {{routeRe?: number}} [opts] `routeRe` overrides the `is_re_task` cutoff (default 0.35)
  * @returns {{
@@ -199,6 +203,7 @@ export function readDecisions(opts = {}) {
  *   findIdenticalCall: (tool: string, hash: string) => LedgerEvent|null,
  *   evidenceIds: string[],
  *   limitationsFlagged: string[],
+ *   limitationsNoted: string[],
  *   unknownsRecorded: number,
  *   stopBlocksThisSession: number,
  *   lastStopBlockAt: number|null,
@@ -222,6 +227,7 @@ export function summarize(events, opts = {}) {
   let lastMutationIdx = -1;
   const evidence = new Set();
   const limitations = new Set();
+  const noted = new Set();
   const posts = [];
 
   list.forEach((e, idx) => {
@@ -250,7 +256,14 @@ export function summarize(events, opts = {}) {
         if (ok && tool === 'close_binary') openBinaryWithoutClose = false;
         if (ok && tool === 'record_unknown') unknownsRecorded += 1;
         if (Array.isArray(e.evidence_ids)) for (const id of e.evidence_ids) if (typeof id === 'string') evidence.add(id);
-        if (Array.isArray(e.limitations)) for (const l of e.limitations) if (typeof l === 'string') limitations.add(l);
+        if (Array.isArray(e.limitations)) {
+          const notedPost = Array.isArray(e.notes) && e.notes.includes('unknown_candidate');
+          for (const l of e.limitations) {
+            if (typeof l !== 'string') continue;
+            limitations.add(l);
+            if (notedPost) noted.add(l);
+          }
+        }
         const hasBody = (Number(e.bytes) || 0) > 0 || (Array.isArray(e.evidence_ids) && e.evidence_ids.length > 0);
         posts.push({ tool, hash: typeof e.input_hash === 'string' ? e.input_hash : null, ok, reusable: ok && hasBody, idx, event: e });
         break;
@@ -292,6 +305,7 @@ export function summarize(events, opts = {}) {
     findIdenticalCall,
     evidenceIds: [...evidence],
     limitationsFlagged: [...limitations],
+    limitationsNoted: [...noted],
     unknownsRecorded,
     stopBlocksThisSession: stopBlocks,
     lastStopBlockAt,

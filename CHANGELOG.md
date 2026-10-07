@@ -4,6 +4,44 @@ All notable changes to rea-jev are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.4] - 2026-10-07
+
+Hook noise found while mapping landonorris.com with the plugin active (48
+route events and 40 evidence events in one session), fixed with a measurement
+behind each change.
+
+### Fixed
+
+- The route hook routed the host's own messages. Claude Code delivers task
+  notifications and subagent hand-backs through `UserPromptSubmit` too, and
+  once a session had REA activity every one of them reached Jev; one even
+  replaced the declared target with a workflow
+  script path, and the sniffer read closing XML tags (`</task-id>`,
+  `</output-file>`) as paths that "were not found on disk". A prompt that is
+  nothing but XML elements is now recognized as a harness envelope and skipped
+  before the pre-filter: no Jev call, no ledger event, the declared target
+  carries forward (27 of that session's 48 route events). A closing tag is no
+  longer a path candidate, and a leading slash command
+  (`/rea-jev:reverse-engineer`) is no longer a path hint.
+- The evidence hook asked for `record_unknown` on every result of a tool whose
+  limitations never change. REA repeats the same disclaimers on every
+  `inspect_web_page` ("Observation starts when REA attaches…") and
+  `analyze_web_bundle`; the old question scored them 0.8–0.98 and the note
+  quoted the first one each time. The question now asks for a gap specific to
+  this result and names fixed disclaimers and "coverage is complete" statements
+  as false (on 23 recorded results, `list_browser_targets`'s "All page targets
+  … are listed" fell from 0.83 to 0.25, while results that report a missing or
+  policy-filtered section stayed at 0.86–0.97), and the note is emitted only
+  when the result carries a limitation sentence no earlier note this session
+  covered, quoting that sentence; a limitation recorded without a note (Jev
+  skipped or failed, or the answer was below the bar) stays eligible. A
+  `completeness` object whose status is not complete now becomes a limitation
+  sentence of its own (`completeness incomplete; missing_sections: events`),
+  ahead of the tool's fixed disclaimers, so the note quotes the result's
+  actual gap. Replayed over the recorded session: 4 notes instead of 23, one
+  per tool. The answer is still recorded on every call; the decision log
+  marks a withheld note.
+
 ## [0.1.3] - 2026-10-06
 
 ### Added
@@ -114,3 +152,4 @@ Initial release.
 [0.1.1]: https://github.com/juan-viox/rea-jev/compare/v0.1.0...v0.1.1
 [0.1.2]: https://github.com/juan-viox/rea-jev/compare/v0.1.1...v0.1.2
 [0.1.3]: https://github.com/juan-viox/rea-jev/compare/v0.1.2...v0.1.3
+[0.1.4]: https://github.com/juan-viox/rea-jev/compare/v0.1.3...v0.1.4

@@ -66,6 +66,34 @@ describe('pre-filter', () => {
     assert.equal(empty.stdout, '');
     assert.equal(fake.requests.length, before);
   });
+  test('a harness envelope (task notification, subagent hand-back) is never routed: no Jev call, no ledger event, even with REA activity', async () => {
+    const before = fake.requests.length;
+    const session = newSession('route');
+    seedLedger(tmp, session, [
+      { kind: 'route', prompt_excerpt: 'first', answers: {}, declared_target: SAMPLE_APP, decision: 'route' },
+      { kind: 'pre', tool: 'open_binary', input_hash: 'sha256:x', decision: 'silent', source: 'local' },
+    ]);
+    script({ is_re_task: 0.9, target_kind: 'javascript_application' });
+    // Carries a keyword and an existing path, so only the envelope rule keeps it out.
+    const envelope = `<task-notification>\n<task-id>w3a37azco</task-id>\n<output-file>${path.join(ROOT, 'package.json')}</output-file>\n<status>completed</status>\n<summary>Reverse-engineer the bundle in ${SAMPLE_APP}</summary>\n</task-notification>`;
+    const r = await runHook('hook-route', rePrompt(session, { prompt: envelope }), env());
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(r.stdout, '');
+    assert.equal(fake.requests.length, before, 'no Jev request');
+    const events = ledgerEvents(tmp, session);
+    assert.equal(events.length, 2, 'no route event written');
+    assert.equal(events[0].declared_target, SAMPLE_APP, 'the declared target is untouched');
+  });
+  test('the raw slash-command prompt still routes, with the URL as its only hint and as the declared target', async () => {
+    const before = fake.requests.length;
+    const session = newSession('route');
+    script({ is_re_task: 0.9, target_kind: 'website_in_browser' });
+    const r = await runHook('hook-route', rePrompt(session, { prompt: '/rea-jev:reverse-engineer https://example.com/' }), env());
+    assert.equal(fake.requests.length, before + 1);
+    assert.match(context(r), /target: website_in_browser/);
+    assert.deepEqual(fake.requests[before].body.state.sniff_hints, ['url https://example.com/']);
+    assert.equal(ledgerEvents(tmp, session).at(-1).declared_target, 'https://example.com/');
+  });
 });
 
 describe('route block', () => {
