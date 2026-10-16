@@ -32,7 +32,7 @@ Keep a finding ledger per investigation: claim, Evidence IDs, evidence type (sta
 
 ## Recording unknowns with `record_unknown`
 
-Call `record_unknown` for a gap that affects a conclusion the user will rely on; keep trivial gaps in your notes. All of these fields are **required** (rea-agents 4.0.1 schema):
+Call `record_unknown` for a gap that affects a conclusion the user will rely on; keep trivial gaps in your notes. All of these fields are **required** (rea-agents 6.5.0 schema; `supporting_evidence_ids`, `contradicting_evidence_ids` and `comparison_conclusion_scope` are optional):
 
 | Field | Type | What to put |
 |---|---|---|
@@ -43,6 +43,7 @@ Call `record_unknown` for a gap that affects a conclusion the user will rely on;
 | `required_confidence` | `observed` \| `derived` \| `inferred` | The minimum evidence grade that counts as resolution. Only observed evidence can verify a resolution later. |
 | `required_environment` | typed value (see REA docs) | Where the evidence must come from: the macOS host with Accessibility permission, a running instance, a specific build. |
 | `recommended_probes` | array | Concrete next calls, each as a tool and its arguments, so a later pass can run them without re-deriving the plan. |
+| `relationships` | array | Links to other recorded unknowns this one depends on or supersedes; `[]` when it stands alone. |
 | `relationships` | array | Links to related unknowns or Evidence (pass `[]` when there are none; the field is still required). |
 
 Optional: `supporting_evidence_ids` and `contradicting_evidence_ids` (ordered arrays of full IDs). REA validates every referenced ID and rejects a duplicate stable identity, so look at `list_unknowns` before recording a near-duplicate. For the exact schema of the `anyOf` fields, read the tool's input schema from `tools/list` or the REA docs; do not guess.

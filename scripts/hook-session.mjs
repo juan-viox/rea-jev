@@ -2,7 +2,7 @@
 /**
  * SessionStart hook (DESIGN.md §5.5): one status line, no Jev call.
  *
- *   rea-jev 0.1.0 · mode advise · Jev key: present (typesafe) · REA pinned 4.0.1 · /rea-jev:setup for diagnostics
+ *   rea-jev 0.2.0 · mode advise · Jev key: present (typesafe) · REA pinned 6.5.0 · /rea-jev:setup for diagnostics
  *
  * Reads stdin only to honour the hook contract; the output does not depend on
  * it. Fails open: any error → exit 0 with empty stdout. Never prints the key.

@@ -7,10 +7,13 @@
  *   1. not an REA tool / mode off            → silent
  *   2. redundancy (local): identical inspect call already answered → deny
  *   3. hard rules (local): a non-loopback CDP/inspector endpoint on any REA
- *      tool → deny; for runtime-class tools an out-of-scope executable or a
+ *      tool → deny; for runtime-class tools a program to run, attach to or
+ *      load (`executable`, `program`, `path`, `executable_path`,
+ *      `application_path`) outside cwd and the declared target, or a
  *      credential in the scenario environment → ask
- *   4. Jev gate, only for runtime-class tools and for extract/export/import
- *      with paths outside cwd: within_scope / irreversible / runtime_requested.
+ *   4. Jev gate, only for runtime-class tools and for the file-moving tools
+ *      (extract, export, import, recover, ADB pulls) with paths outside cwd:
+ *      within_scope / irreversible / runtime_requested.
  *      A `deny` (enforce) needs the deciding answer at or above the `confirm`
  *      band and a declared target; otherwise the decision degrades to `ask`.
  *   5. everything else → silent (normal permission flow)
@@ -39,7 +42,17 @@ const JEV_MAX_MS = SAFETY_MS - 3500;
 /** `user_request` characters sent to Jev. */
 const USER_REQUEST_MAX = 600;
 /** Tools whose file-moving inputs trigger the Jev gate when they leave cwd. */
-const PATH_GATED_TOOLS = new Set(['extract_artifact', 'export_evidence_bundle', 'import_evidence_bundle']);
+const PATH_GATED_TOOLS = new Set([
+  'extract_artifact', 'extract_firmware', 'export_evidence_bundle', 'export_web_scripts', 'import_evidence_bundle',
+  'recover_javascript_sources', 'pull_adb_file', 'pull_adb_package', 'collect_adb_bugreport',
+]);
+/**
+ * Top-level inputs of runtime-class tools that name the program REA will run,
+ * attach to or load: `executable` (capture_process_scenario), `program` (Frida
+ * spawn), `path` (Rizin), `executable_path` and `application_path`
+ * (capture_electron_scenario). Resolved against `working_directory` when given.
+ */
+const RUNTIME_PROGRAM_KEYS = ['executable', 'program', 'path', 'executable_path', 'application_path'];
 const ENDPOINT_KEYS = new Set(['cdp_endpoint', 'inspector_endpoint']);
 const PATH_KEY_RE = /(^|_)(path|paths|dir|directory|destination|output|root|file|files|target)$/i;
 
@@ -125,14 +138,13 @@ async function main() {
     return finish('deny', 'local', `rea-jev: REA only supports loopback endpoints; a remote endpoint would observe another machine (${remote.key} = ${excerpt(remote.value, 80)}).`);
   }
   if (effect === 'runtime') {
-    if (tool === 'capture_process_scenario') {
-      const exe = typeof toolInput.executable === 'string' ? toolInput.executable.trim() : '';
-      const base = typeof toolInput.working_directory === 'string' && toolInput.working_directory ? resolveFrom(cwd, toolInput.working_directory) : cwd;
-      if (exe && !isBareCommand(exe)) {
-        const abs = resolveFrom(base, exe);
-        if (!isInside(abs, cwd) && !isInside(abs, declaredTargetDir(summary.declaredTarget))) {
-          return finish('ask', 'local', `rea-jev: capture_process_scenario would run ${abs}, which is outside the working directory${summary.declaredTarget ? ' and the declared target' : ''}; confirm this is the program under investigation.`);
-        }
+    const base = typeof toolInput.working_directory === 'string' && toolInput.working_directory ? resolveFrom(cwd, toolInput.working_directory) : cwd;
+    for (const key of RUNTIME_PROGRAM_KEYS) {
+      const exe = typeof toolInput[key] === 'string' ? toolInput[key].trim() : '';
+      if (!exe || isBareCommand(exe)) continue;
+      const abs = resolveFrom(base, exe);
+      if (!isInside(abs, cwd) && !isInside(abs, declaredTargetDir(summary.declaredTarget))) {
+        return finish('ask', 'local', `rea-jev: ${tool} would run ${abs}, which is outside the working directory${summary.declaredTarget ? ' and the declared target' : ''}; confirm this is the program under investigation.`);
       }
     }
     const secretKey = findSecretInEnvironment(toolInput.environment);
@@ -234,9 +246,14 @@ function findSecretInEnvironment(environment) {
   return null;
 }
 
-/** String values that look like filesystem paths or sit under a path-like key (depth ≤ 3). */
+/**
+ * String values that look like filesystem paths or sit under a path-like key
+ * (depth ≤ 3). `device_*` keys (`device_path` on the ADB tools) name a path on
+ * the attached device, never on this machine, and are skipped.
+ */
 function collectPaths(value, out = [], key = '', depth = 0) {
   if (depth > 3 || value == null) return out;
+  if (/^device_/i.test(key)) return out;
   if (typeof value === 'string') {
     const s = value.trim();
     if (s && (PATH_KEY_RE.test(key) || /^(?:\/|~\/|~$|\.{1,2}\/|[A-Za-z]:[\\/])/.test(s))) out.push(s);

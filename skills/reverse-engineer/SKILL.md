@@ -1,9 +1,9 @@
 ---
 name: reverse-engineer
-description: Reverse-engineer any shipped software with REA's MCP tools guided by Jev System 1 decisions — native Mach-O/ELF/PE binaries and .app bundles, Electron/ASAR and minified JavaScript, .NET assemblies, Android APKs, and live websites. Use when asked how a feature in an app works, to decompile or trace code, compare two builds, verify a port against the original, or recreate a feature from a binary. Not for ordinary analysis of a source repository you already have.
+description: Reverse-engineer any shipped software with REA's MCP tools guided by Jev System 1 decisions — native Mach-O/ELF/PE binaries and .app bundles, Electron/ASAR and minified JavaScript, .NET assemblies, Android APKs and devices over ADB, firmware images, packet captures, and live websites. Use when asked how a feature in an app works, to decompile or trace code, compare two builds, verify a port against the original, or recreate a feature from a binary. Not for ordinary analysis of a source repository you already have.
 license: MIT
 metadata:
-  rea_pin: "4.0.1"
+  rea_pin: "6.5.0"
   jev_model: "jev-1.13"
 ---
 
@@ -11,7 +11,7 @@ metadata:
 
 ## 1. When to use this skill, and when not
 
-Use it when a claim depends on a shipped artifact rather than on source you already have: a native Mach-O/ELF/PE binary or `.app` bundle, an Electron/ASAR or minified JavaScript bundle, a .NET assembly, an Android APK, a package archive, or a live page or runtime reachable over a loopback endpoint.
+Use it when a claim depends on a shipped artifact rather than on source you already have: a native Mach-O/ELF/PE binary or `.app` bundle, an Electron/ASAR or minified JavaScript bundle, a .NET assembly, an Android APK or a device over ADB, a firmware image, a packet capture, a package archive, or a live page or runtime reachable over a loopback endpoint.
 
 Do not use it for ordinary analysis of a source repository, and do not run REA readiness commands for such requests. REA's own skill, `reverse-engineer-anything` (installed by `rea setup` into `~/.agents/skills`; source at https://github.com/morluto/rea), remains the canonical tool-by-tool guide. This skill layers the System 1 loop on top and restates only the rules the loop depends on.
 
@@ -31,9 +31,9 @@ What each hook can say, how to respond, and how to tune or silence it with `REA_
 
 ## 3. Route the target first
 
-Pick the first tool from the artifact, not from habit: `open_binary(path)` then `binary_overview` for native targets and analysis databases; `analyze_javascript_application(input_path)` for ASAR or extracted JavaScript, without `open_binary` first; `inspect_managed_artifact(path)` for .NET; `open_binary(path)` then `inspect_artifact` for archives and packages; `list_browser_targets(cdp_endpoint)` for a page the user already has open; `list_electron_targets` or `list_javascript_runtime_targets` for a running Electron or Node process. Android-specific tools are not in rea-agents 4.0.1; fall back to `open_binary` plus `inspect_artifact`. Behind an outbound proxy, `capture_browser_scenario` in launch mode cannot reach the network in rea-agents 4.0.1; use connect mode against a fresh-profile browser you start yourself ([route-table.md](references/route-table.md#capture_browser_scenario-behind-an-outbound-proxy)).
+Pick the first tool from the artifact, not from habit: `open_binary(path)` then `binary_overview` for native targets and analysis databases; `analyze_javascript_application(input_path)` for ASAR or extracted JavaScript, without `open_binary` first; `inspect_managed_artifact(path)` for .NET; `open_binary(path)` then `inspect_artifact` for archives and packages; `list_browser_targets(cdp_endpoint)` for a page the user already has open; `list_electron_targets` or `list_javascript_runtime_targets` for a running Electron or Node process. `inspect_android_package(path)` for an Android APK, then `decode_android_resources`, `search_android_classes`, `inspect_android_class`, `trace_android_references`; `list_adb_devices` for a connected device or emulator; `inspect_firmware_regions(path)` for a firmware image; `inspect_pcap_capture(path)` for a packet capture. Behind an outbound proxy, `capture_browser_scenario` in launch mode could not reach the network in rea-agents 4.0.1 (not re-verified on 6.5.0); when a launch-mode capture fails with `execution_failure`, use connect mode against a fresh-profile browser you start yourself ([route-table.md](references/route-table.md#capture_browser_scenario-behind-an-outbound-proxy)).
 
-Never choose an example app for the user. When no artifact is named, when a name matches several installed artifacts, or when the route note is ambiguous (`target_kind` below 0.5 or `unknown_or_missing`), ask which artifact to inspect before opening anything. Resolve a human-readable name to one artifact yourself only when the conversation or workspace makes it unambiguous. Sniff rules, the full table, and what static evidence cannot establish per target: [references/route-table.md](references/route-table.md). The 116-tool inventory with required inputs and effect classes: [references/tool-catalog.md](references/tool-catalog.md).
+Never choose an example app for the user. When no artifact is named, when a name matches several installed artifacts, or when the route note is ambiguous (`target_kind` below 0.5 or `unknown_or_missing`), ask which artifact to inspect before opening anything. Resolve a human-readable name to one artifact yourself only when the conversation or workspace makes it unambiguous. Sniff rules, the full table, and what static evidence cannot establish per target: [references/route-table.md](references/route-table.md). The 207-tool inventory with required inputs and effect classes: [references/tool-catalog.md](references/tool-catalog.md).
 
 ## 4. Probe discipline
 
@@ -54,7 +54,7 @@ Write the claim to a file with your Write tool and pass `--claim-file`; a conclu
 
 ## 6. Evidence rules
 
-Keep three categories apart in every note and in the final answer: **observations** (returned by a tool, cited by full `ev_` Evidence ID plus address, path, or module), **inferences** (your conclusions, each resting on named observations), and **unknowns** (questions you could not answer). Missing evidence is unknown, never false. Static analysis shows that code and references exist; it does not show that anything executed. Only `capture_*` and `observe_*` evidence supports runtime wording, and passive observation never proves REA clicked, navigated, or evaluated anything. Record a material gap with `record_unknown`, update it with `update_unknown` at the current revision, and `export_evidence_bundle` before `close_binary` when retained Evidence will be needed later. Close the native session with `close_binary` when the investigation is complete. Citation format, required fields, and the plugin's own ledger: [references/evidence-ledger.md](references/evidence-ledger.md).
+Keep three categories apart in every note and in the final answer: **observations** (returned by a tool, cited by full `ev_` Evidence ID plus address, path, or module), **inferences** (your conclusions, each resting on named observations), and **unknowns** (questions you could not answer). Missing evidence is unknown, never false. Static analysis shows that code and references exist; it does not show that anything executed. Only `capture_*` and `observe_*` evidence, debugger and instrumentation sessions (GDB, Rizin, Frida, Cutter), ADB device observation, and recordings read back with the capture tools support runtime wording, and passive observation never proves REA clicked, navigated, or evaluated anything. Record a material gap with `record_unknown`, update it with `update_unknown` at the current revision, and `export_evidence_bundle` before `close_binary` when retained Evidence will be needed later. Close the native session with `close_binary` when the investigation is complete. Citation format, required fields, and the plugin's own ledger: [references/evidence-ledger.md](references/evidence-ledger.md).
 
 ## 7. Parallel work
 
@@ -62,7 +62,7 @@ When the request spans several features, subsystems, apps, or versions (the rout
 
 ## 8. From understanding to code
 
-When the user wants the feature rebuilt, separate observed behavior (what the artifact demonstrably does, which the port must preserve) from design choices (how the original does it, which the port may change, stated explicitly). Turn the observations into an obligation list with Evidence IDs and a verification method per row. Use `build_reconstruction_obligation_ledger`, `evaluate_reconstruction_coverage`, and `verify_reconstruction` where their inputs exist; for JavaScript ports use `compare_source_to_bundle` (its `reference` is a committed source graph of your port that only the CLI produces: `npx -y rea-agents@4.0.1 import-reference-source <port-root>`; without that step compare two analyzed graphs with `compare_application_versions` instead). Then build with normal coding tools. Worked example: [references/reconstruction.md](references/reconstruction.md).
+When the user wants the feature rebuilt, separate observed behavior (what the artifact demonstrably does, which the port must preserve) from design choices (how the original does it, which the port may change, stated explicitly). Turn the observations into an obligation list with Evidence IDs and a verification method per row. Use `build_reconstruction_obligation_ledger`, `evaluate_reconstruction_coverage`, and `verify_reconstruction` where their inputs exist; for JavaScript ports use `compare_source_to_bundle` (its `reference` is a committed source graph of your port that only the CLI produces: `npx -y rea-agents@6.5.0 import-reference-source <port-root>`; without that step compare two analyzed graphs with `compare_application_versions` instead). Then build with normal coding tools. Worked example: [references/reconstruction.md](references/reconstruction.md).
 
 ## 9. Scope and ethics
 
@@ -70,4 +70,4 @@ Analyze only software the user is entitled to analyze: their own, licensed for i
 
 ## 10. Readiness
 
-Do not run `doctor` before every task. When REA tools are available and not reported stale, proceed. When REA tools are missing, a provider is unavailable, registration is reported stale, or the user asks for a diagnosis, run `/rea-jev:setup`, which runs `jev doctor` and `npx -y rea-agents@4.0.1 doctor --json` and explains the fixes. Restart the agent after MCP registration changes.
+Do not run `doctor` before every task. When REA tools are available and not reported stale, proceed. When REA tools are missing, a provider is unavailable, registration is reported stale, or the user asks for a diagnosis, run `/rea-jev:setup`, which runs `jev doctor` and `npx -y rea-agents@6.5.0 doctor --json` and explains the fixes. Restart the agent after MCP registration changes.

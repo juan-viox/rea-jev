@@ -445,3 +445,111 @@ describe('no declared target', () => {
     assert.equal(lastPre(session).source, 'jev');
   });
 });
+
+describe('rea-agents 6.5.0 tool classes', () => {
+  test('a Frida attach is runtime-class: no local rule fires and the call reaches the Jev gate', async () => {
+    const before = fake.requests.length;
+    const session = newSession('gate');
+    seedLedger(tmp, session, [routeEvent]);
+    script({ within_scope: 0.9, irreversible: 0.1, runtime_requested: 0.9 });
+    const r = await runHook(
+      'hook-gate',
+      payload('pre-capture-process-in-scope.json', { session_id: session, cwd: ROOT, tool_name: 'mcp__rea__start_frida_session', tool_input: { mode: 'attach', pid: 4242 } }),
+      env(),
+    );
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(r.stdout, '');
+    assert.equal(fake.requests.length, before + 1);
+    assert.equal(fake.requests[before].body.state.tool, 'start_frida_session');
+    assert.equal(lastPre(session).source, 'jev');
+  });
+  test('a device-changing ADB call is runtime-class and asks when Jev scores it irreversible', async () => {
+    script({ within_scope: 0.9, irreversible: 0.9, runtime_requested: 0.9 });
+    const session = newSession('gate');
+    seedLedger(tmp, session, [routeEvent]);
+    const r = await runHook(
+      'hook-gate',
+      payload('pre-capture-process-in-scope.json', {
+        session_id: session,
+        cwd: ROOT,
+        tool_name: 'mcp__plugin_rea-jev_rea__install_adb_package',
+        tool_input: { serial: 'emulator-5554', apk_path: path.join(ROOT, 'tests', 'fixtures', 'app.apk') },
+      }),
+      env(),
+    );
+    assert.equal(decision(r), 'ask');
+    assert.match(reason(r), /`install_adb_package` may change, delete, or transmit data .* \(irreversible 0\.90\)/);
+    assert.equal(lastPre(session).source, 'jev');
+  });
+  test('a Rizin debug session on a binary outside cwd and the declared target → ask locally, no Jev call', async () => {
+    const before = fake.requests.length;
+    const session = newSession('gate');
+    seedLedger(tmp, session, [routeEvent]);
+    const r = await runHook(
+      'hook-gate',
+      payload('pre-capture-process-in-scope.json', { session_id: session, cwd: tmp, tool_name: 'mcp__rea__start_rizin_debug_session', tool_input: { path: '/opt/unrelated/bin/other-tool', inferior_tty: '/dev/ttys004' } }),
+      env(),
+    );
+    assert.equal(decision(r), 'ask');
+    assert.match(reason(r), /start_rizin_debug_session would run \/opt\/unrelated\/bin\/other-tool, which is outside the working directory and the declared target/);
+    assert.equal(fake.requests.length, before);
+    assert.equal(lastPre(session).source, 'local');
+  });
+  test('a Frida spawn of the declared target passes the local program rule and reaches Jev', async () => {
+    const before = fake.requests.length;
+    const session = newSession('gate');
+    seedLedger(tmp, session, [routeEvent]);
+    script({ within_scope: 0.9, irreversible: 0.1, runtime_requested: 0.9 });
+    const program = path.join(SAMPLE_APP, 'Contents', 'MacOS', 'Sample');
+    const r = await runHook(
+      'hook-gate',
+      payload('pre-capture-process-in-scope.json', { session_id: session, cwd: tmp, tool_name: 'mcp__rea__start_frida_session', tool_input: { mode: 'spawn', program, argv: [] } }),
+      env(),
+    );
+    assert.equal(r.stdout, '');
+    assert.equal(fake.requests.length, before + 1);
+    assert.equal(lastPre(session).source, 'jev');
+  });
+  test('an ADB pull into a directory outside cwd reaches Jev; the device path alone is not a local path', async () => {
+    const before = fake.requests.length;
+    script({ within_scope: 0.9, irreversible: 0.1, runtime_requested: 0.5 });
+    const s1 = newSession('gate');
+    seedLedger(tmp, s1, [routeEvent]);
+    const outside = await runHook(
+      'hook-gate',
+      payload('pre-export-evidence-bundle.json', { session_id: s1, cwd: ROOT, tool_name: 'mcp__rea__pull_adb_file', tool_input: { serial: 'emulator-5554', device_path: '/sdcard/Download/app.log', output_directory: '/tmp/elsewhere' } }),
+      env(),
+    );
+    assert.equal(outside.stdout, '');
+    assert.equal(fake.requests.length, before + 1);
+    assert.equal(lastPre(s1).source, 'jev');
+    const s2 = newSession('gate');
+    seedLedger(tmp, s2, [routeEvent]);
+    const inside = await runHook(
+      'hook-gate',
+      payload('pre-export-evidence-bundle.json', { session_id: s2, cwd: ROOT, tool_name: 'mcp__rea__pull_adb_file', tool_input: { serial: 'emulator-5554', device_path: '/sdcard/Download/app.log', output_directory: './out' } }),
+      env(),
+    );
+    assert.equal(inside.stdout, '');
+    assert.equal(fake.requests.length, before + 1, 'no second Jev call');
+    assert.equal(lastPre(s2).source, 'local');
+    assert.equal(lastPre(s2).decision, 'silent');
+  });
+  test('a repeated frida_session_status is status-class: never denied as redundant, never sent to Jev', async () => {
+    const before = fake.requests.length;
+    const session = newSession('gate');
+    const p = payload('pre-binary-session.json', { session_id: session, tool_name: 'mcp__rea__frida_session_status', tool_input: { session_id: 'frida-1' } });
+    seedLedger(tmp, session, [{ kind: 'post', tool: 'frida_session_status', input_hash: hashInput(p.tool_name, p.tool_input), ok: true, evidence_ids: [], limitations: [], bytes: 300 }]);
+    const r = await runHook('hook-gate', p, env());
+    assert.equal(r.stdout, '');
+    assert.equal(fake.requests.length, before);
+    assert.equal(lastPre(session).decision, 'silent');
+  });
+  test('an identical inspect call after close_frida_session is not redundant (close_* is a mutation)', async () => {
+    const session = newSession('gate');
+    seedLedger(tmp, session, [postFor('pre-search-strings.json'), { kind: 'post', tool: 'close_frida_session', input_hash: 'sha256:m', ok: true, evidence_ids: [], limitations: [], bytes: 50 }]);
+    const r = await runHook('hook-gate', payload('pre-search-strings.json', { session_id: session }), env());
+    assert.equal(r.stdout, '');
+    assert.equal(lastPre(session).decision, 'silent');
+  });
+});

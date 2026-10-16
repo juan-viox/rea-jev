@@ -15,7 +15,7 @@
  *      `description` of at most 1024 characters.
  *   5. The `rea-agents@<pin>` in `.mcp.json` equals `data/rea-tool-catalog.json`'s version.
  *   6. Every backticked REA tool reference in `skills/**\/*.md` and `agents/*.md`
- *      names a tool in the catalog, except the documented Android allowlist.
+ *      names a tool in the catalog.
  *   7. `skills/reverse-engineer/references/tool-catalog.md` equals what
  *      `--write-catalog` would generate (one table per catalog kind).
  *
@@ -52,18 +52,6 @@ const CATALOG_MD = `${SKILL_DIR}/references/tool-catalog.md`;
 const CATALOG_JSON = 'data/rea-tool-catalog.json';
 
 /**
- * Android tools REA documents (docs/android-analysis.md) that the 4.0.1 MCP
- * catalog does not list. The skill may name them with a version caveat.
- */
-export const ANDROID_TOOL_ALLOWLIST = new Set([
-  'inspect_android_package',
-  'search_android_classes',
-  'inspect_android_class',
-  'inspect_android_method',
-  'trace_android_references',
-]);
-
-/**
  * snake_case identifiers from DESIGN.md §5–§6 and REA's MCP prompt names whose
  * first segment collides with an REA tool verb (compare_, trace_, capture_,
  * build_, open_ …) but which are not tools. Anything here is never flagged.
@@ -78,6 +66,8 @@ export const SPEC_VOCABULARY = new Set([
   'input_hash', 'input_excerpt', 'evidence_ids', 'shadow_block',
   // REA MCP prompt names (docs/mcp-prompts.md)
   'trace_crash', 'audit_residual_unknowns', 'prepare_bounded_process_capture',
+  // Claude Code hook input fields named in the decision-point docs
+  'stop_hook_active',
   // REA Evidence ID prefix used in prose
   'ev_',
 ]);
@@ -87,22 +77,44 @@ export const SPEC_VOCABULARY = new Set([
 /* ------------------------------------------------------------------------ */
 
 /**
- * Effect class of a catalog tool, mirroring DESIGN.md §3 `EFFECT_CLASS`.
- * Kept local so the validator stays runnable before scripts/lib exists.
- * @param {{name:string, effects?:{launchesProcess?:boolean}}} tool
+ * Debugger, instrumentation and device-control tools: runtime-class by name
+ * (same list as `RUNTIME_EXACT` in scripts/lib/rea.mjs).
+ */
+const RUNTIME_TOOLS = new Set([
+  'start_frida_session', 'instrument_with_frida', 'load_frida_script', 'resume_frida_session',
+  'start_gdb_session', 'gdb_console',
+  'start_rizin_debug_session', 'rizin_debug_command', 'execute_rizin_command', 'cutter_command',
+  'install_adb_package', 'uninstall_adb_package', 'push_adb_file', 'start_adb_app', 'start_adb_activity', 'stop_adb_app',
+]);
+
+/**
+ * Effect class of a catalog tool, mirroring DESIGN.md §3 `EFFECT_CLASS` and
+ * `scripts/lib/rea.mjs` `effectClass` (tests/rea-catalog.test.mjs checks the
+ * two agree over the whole catalog). Kept local so the validator stays
+ * runnable before scripts/lib exists.
+ * @param {{name:string, effects?:{launchesProcess?:boolean, mutatesTarget?:boolean, executesForeignCode?:boolean, mutatesDevice?:boolean}}} tool
  * @returns {'runtime'|'mutation'|'status'|'inspect'}
  */
 export function effectClass(tool) {
   const n = String(tool?.name || '');
-  if (tool?.effects?.launchesProcess && /^(capture_|observe_)/.test(n)) return 'runtime';
+  const fx = tool?.effects && typeof tool.effects === 'object' ? tool.effects : null;
   if (
-    /^(set_|annotate_|import_|export_)/.test(n) ||
-    ['unset_bookmark', 'record_unknown', 'update_unknown', 'extract_artifact', 'open_binary', 'close_binary'].includes(n)
+    /^(set_|annotate_|import_|export_|open_|close_)/.test(n) ||
+    [
+      'unset_bookmark', 'record_unknown', 'update_unknown', 'extract_artifact', 'extract_firmware', 'recover_javascript_sources',
+      'pull_adb_file', 'pull_adb_package', 'collect_adb_bugreport', 'unload_frida_script',
+    ].includes(n)
   ) return 'mutation';
   if (
-    /^current_/.test(n) ||
-    ['binary_session', 'list_unknowns', 'get_navigation_context', 'get_evidence_bundle', 'verify_unknown_resolution', 'list_documents'].includes(n)
+    /^current_/.test(n) || /_session_status$/.test(n) ||
+    [
+      'binary_session', 'list_unknowns', 'get_navigation_context', 'get_evidence_bundle', 'verify_unknown_resolution', 'list_documents',
+      'list_cutter_sessions', 'list_frida_devices', 'list_frida_processes', 'list_adb_devices',
+    ].includes(n)
   ) return 'status';
+  if (RUNTIME_TOOLS.has(n)) return 'runtime';
+  if (/^(capture_|observe_)/.test(n) && (!fx || fx.launchesProcess === true || fx.mutatesTarget === true || fx.executesForeignCode === true)) return 'runtime';
+  if (fx && (fx.executesForeignCode === true || fx.mutatesDevice === true)) return 'runtime';
   return 'inspect';
 }
 
@@ -117,6 +129,13 @@ const KIND_SUBTITLES = {
   'browser-provider': 'Browser provider — Chrome DevTools Protocol.',
   'electron-provider': 'Electron provider.',
   'runtime-provider': 'Runtime provider — V8 Inspector.',
+  'android-provider': 'Android provider — APK classes, members and references.',
+  'apktool-provider': 'Apktool provider — decoded manifest and resources.',
+  'pcap-provider': 'Packet-capture provider — pcap and pcapng files.',
+  'flutter-provider': 'Flutter provider — build identification and Dart AOT snapshots.',
+  'jeb-provider': 'JEB provider — projects, units and decompilation through a running JEB.',
+  'adb-provider': 'ADB provider — attached Android devices and emulators.',
+  'firmware-provider': 'Firmware provider — image regions and extraction.',
   session: 'Session — target lifecycle, Evidence, unknowns, comparisons.',
 };
 
@@ -178,11 +197,11 @@ export function generateToolCatalogMarkdown(catalog) {
     'Tool names are bare. In Claude Code they appear as `mcp__rea__<tool>` (REA registered globally by `rea setup`) or `mcp__plugin_rea-jev_rea__<tool>` (REA bundled by this plugin). Required inputs are the schema\'s `required` list; optional inputs are in the JSON catalog.',
     '',
   );
-  out.push('**Effect class** is what the rea-jev gate (`scripts/lib/rea.mjs`) uses, derived from the name and the `launchesProcess` effect:', '');
+  out.push('**Effect class** is what the rea-jev gate (`scripts/lib/rea.mjs`) uses, derived from the name and the catalog effect flags (`launchesProcess`, `mutatesTarget`, `executesForeignCode`, `mutatesDevice`):', '');
   out.push('| Class | Rule | Gate behavior |', '|---|---|---|');
-  out.push(`| \`runtime\` (${counts.runtime}) | launches a process and the name starts with \`capture_\` or \`observe_\` | local hard rules, then a Jev scope/risk check; may \`ask\` or \`deny\` |`);
-  out.push(`| \`mutation\` (${counts.mutation}) | \`set_*\`, \`annotate_*\`, \`import_*\`, \`export_*\`, \`unset_bookmark\`, \`record_unknown\`, \`update_unknown\`, \`extract_artifact\`, \`open_binary\`, \`close_binary\` | never deduplicated; resets the redundancy window |`);
-  out.push(`| \`status\` (${counts.status}) | \`binary_session\`, \`list_unknowns\`, \`get_navigation_context\`, \`current_*\`, \`get_evidence_bundle\`, \`verify_unknown_resolution\`, \`list_documents\` | never deduplicated, never sent to Jev |`);
+  out.push(`| \`runtime\` (${counts.runtime}) | the debugger, instrumentation and device-control tools (\`start_frida_session\`, \`instrument_with_frida\`, \`load_frida_script\`, \`resume_frida_session\`, \`start_gdb_session\`, \`gdb_console\`, \`start_rizin_debug_session\`, \`rizin_debug_command\`, \`execute_rizin_command\`, \`cutter_command\`, \`install_adb_package\`, \`uninstall_adb_package\`, \`push_adb_file\`, \`start_adb_app\`, \`start_adb_activity\`, \`stop_adb_app\`); a \`capture_*\` or \`observe_*\` tool that launches a process, mutates the target or executes foreign code; any tool whose effects say \`executesForeignCode\` or \`mutatesDevice\` | local hard rules, then a Jev scope/risk check; may \`ask\` or \`deny\` |`);
+  out.push(`| \`mutation\` (${counts.mutation}) | \`set_*\`, \`annotate_*\`, \`import_*\`, \`export_*\`, \`open_*\`, \`close_*\`, \`unset_bookmark\`, \`record_unknown\`, \`update_unknown\`, \`extract_artifact\`, \`extract_firmware\`, \`recover_javascript_sources\`, \`pull_adb_file\`, \`pull_adb_package\`, \`collect_adb_bugreport\`, \`unload_frida_script\` | never deduplicated; resets the redundancy window |`);
+  out.push(`| \`status\` (${counts.status}) | \`binary_session\`, \`list_unknowns\`, \`get_navigation_context\`, \`current_*\`, \`*_session_status\`, \`get_evidence_bundle\`, \`verify_unknown_resolution\`, \`list_documents\`, \`list_cutter_sessions\`, \`list_frida_devices\`, \`list_frida_processes\`, \`list_adb_devices\` | never deduplicated, never sent to Jev |`);
   out.push(`| \`inspect\` (${counts.inspect}) | everything else | an identical repeated call (same tool + same input) is denied until a mutation happens; results are scored by the evidence hook |`, '');
   out.push(`Contents: ${[...byKind].map(([k, list]) => `[${k}](#${k}-${list.length}-tools)`).join(' · ')}`, '');
 
@@ -403,7 +422,7 @@ export function runValidation(opts = {}) {
         const id = toolCandidate(span);
         if (!id || seen.has(id)) continue;
         seen.add(id);
-        if (names.has(id) || ANDROID_TOOL_ALLOWLIST.has(id)) continue;
+        if (names.has(id)) continue;
         if (!id.includes('_')) continue; // single words are never tool references
         if (SPEC_VOCABULARY.has(id) || props.has(id)) continue;
         if (verbs.has(id.split('_')[0])) fail(`${rel}: \`${id}\` is not a tool in rea-agents@${catalog.version} (see ${CATALOG_JSON})`);

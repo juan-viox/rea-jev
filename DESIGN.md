@@ -93,6 +93,7 @@ rea-jev/
 │   ├── hook-stop.mjs            # Stop
 │   ├── hook-session.mjs         # SessionStart (status line, no Jev call)
 │   ├── jev.mjs                  # CLI: ask | rank | classify | verify | doctor | stats
+│   ├── import-rea-catalog.mjs   # regenerates data/rea-tool-catalog.json from an installed rea-agents package
 │   └── validate.mjs             # repo self-check: manifests parse, hook scripts exist, SKILL frontmatter
 ├── skills/
 │   └── reverse-engineer/
@@ -302,17 +303,23 @@ object with `__oversize_bytes__`, so the call is still recorded),
 
 - `REA_TOOL_MATCHER = /mcp__(plugin_rea-jev_)?rea__/` and
   `isReaTool(toolName)`, `bareToolName(toolName)` → e.g. `open_binary`.
-- `EFFECT_CLASS(tool)` from `data/rea-tool-catalog.json`:
-  `runtime` (launchesProcess && name starts with `capture_`/`observe_`),
-  `mutation` (`set_*`, `annotate_*`, `unset_bookmark`, `record_unknown`, `update_unknown`, `import_*`, `export_*`, `extract_artifact`, `open_binary`, `close_binary`),
-  `status` (`binary_session`, `list_unknowns`, `get_navigation_context`, `current_*`, `get_evidence_bundle`, `verify_unknown_resolution`, `list_documents`),
-  `inspect` (everything else).
+- `EFFECT_CLASS(tool)` from `data/rea-tool-catalog.json`, evaluated in this order:
+  `mutation` (`set_*`, `annotate_*`, `import_*`, `export_*`, `open_*`, `close_*`, `unset_bookmark`, `record_unknown`, `update_unknown`, `extract_artifact`, `extract_firmware`, `recover_javascript_sources`, `pull_adb_file`, `pull_adb_package`, `collect_adb_bugreport`, `unload_frida_script`),
+  `status` (`binary_session`, `list_unknowns`, `get_navigation_context`, `current_*`, `*_session_status`, `get_evidence_bundle`, `verify_unknown_resolution`, `list_documents`, `list_cutter_sessions`, `list_frida_devices`, `list_frida_processes`, `list_adb_devices`),
+  `runtime` (the debugger, instrumentation and device-control tools by name: `start_frida_session`, `instrument_with_frida`, `load_frida_script`, `resume_frida_session`, `start_gdb_session`, `gdb_console`, `start_rizin_debug_session`, `rizin_debug_command`, `execute_rizin_command`, `cutter_command`, `install_adb_package`, `uninstall_adb_package`, `push_adb_file`, `start_adb_app`, `start_adb_activity`, `stop_adb_app`; a `capture_*`/`observe_*` tool whose effects have `launchesProcess`, `mutatesTarget` or `executesForeignCode`, or that is missing from the catalog; any tool whose effects have `executesForeignCode` or `mutatesDevice`),
+  `inspect` (everything else, including the passive attach tools `observe_web_session`, `observe_javascript_runtime`, `capture_web_screenshot`).
 - `isStaticTool(tool)`: false for every `capture_*`/`observe_*` tool (whether or not it launches a process),
-  for the passive CDP/Inspector tools that attach to a live browser, Electron or Node process (catalog kind
-  `browser-provider`/`electron-provider`/`runtime-provider` with `effects.accessesNetwork`), and for the tools
-  that compare or reconcile runtime captures (`compare_web_captures`, `compare_web_screenshots`,
-  `reconcile_javascript_runtime`); true for everything else, including `analyze_javascript_application`,
-  which reads files. Only static tools get the `claims_runtime` question (§5.3). `effectClass` is unchanged.
+  for the runtime-class debugger, instrumentation and device-control tools and their session tools
+  (`*_session_status`, `close_*_session`, `list_frida_*`, `list_cutter_sessions`, `unload_frida_script`), for any
+  tool whose effects have `executesForeignCode` or `mutatesDevice`, for the passive CDP/Inspector/ADB tools that
+  attach to a live browser, Electron or Node process or an Android device (catalog kind
+  `browser-provider`/`electron-provider`/`runtime-provider`/`adb-provider` with `effects.accessesNetwork`), and
+  for the tools that read, compare or reconcile runtime captures and recordings (`compare_web_captures`,
+  `compare_web_screenshots`, `reconcile_javascript_runtime`, `compare_process_captures`,
+  `correlate_static_and_runtime`, `find_changed_behavior`, `inspect_web_network_capture`, `inspect_packet_capture`,
+  `inspect_packet_fields`, `inspect_pcap_capture`, `inspect_recorded_crash`, `decode_signal_recording`); true for
+  everything else, including `analyze_javascript_application` and `inspect_android_package`, which read files.
+  Only static tools get the `claims_runtime` question (§5.3). `effectClass` is unchanged.
 - `parseReaResult(tool_response)` → `{ text, json|null, evidenceIds[] (≤64), evidenceCount, limitations[], unknowns[], truncated:boolean, error:string|null, bytes, empty:boolean }`.
   `tool_response` may be `{content:[{type:'text',text}], structuredContent?, isError?}`, a bare content array `[{type:'text',text}]`, or a plain string;
   evidence IDs match `/\bev_[0-9a-f]{64}\b/g`. Limitations are read **only from REA's envelope positions**, in document order: the keys `limitations`, `limitation`,
@@ -446,9 +453,9 @@ Order of evaluation; the first rule that fires decides.
    (`advise` and `enforce`; `shadow` logs only.)
 3. **Hard rules (local, free).**
    - Any REA tool whose input carries a non-loopback `cdp_endpoint` or `inspector_endpoint` (depth ≤ 3; browser, Electron and Inspector tools included, `list_*_targets` and `inspect_*_page` among them) → `deny` ("REA only supports loopback endpoints; a remote endpoint would observe another machine").
-   - For `runtime`-class tools: `capture_process_scenario.executable` resolves outside both `cwd` and the ledger's `declared_target` directory, and is not a bare command name → `ask` with reason.
+   - For `runtime`-class tools: the program input (`executable`, `program`, `path`, `executable_path`, `application_path`, resolved against `working_directory`) resolves outside both `cwd` and the ledger's `declared_target` directory, and is not a bare command name → `ask` with reason.
    - For `runtime`-class tools: `environment` values matching the secret patterns → `ask` ("scenario environment appears to contain a credential; REA records environment; confirm or remove it"). The shell variables `PWD`/`OLDPWD` (a `pwd` key with a path value) are not credentials.
-4. **Jev gate (only for `runtime`-class and for `extract_artifact`/`export_evidence_bundle`/`import_evidence_bundle` with paths outside cwd).**
+4. **Jev gate (only for `runtime`-class and for the file-moving tools `extract_artifact`, `extract_firmware`, `export_evidence_bundle`, `export_web_scripts`, `import_evidence_bundle`, `recover_javascript_sources`, `pull_adb_file`, `pull_adb_package`, `collect_adb_bugreport` with paths outside cwd; `device_*` inputs name paths on the device and do not count).**
    State: `{ user_request: ledger.userRequest (≤600; the last RE route's prompt_for_jev, never a follow-up), declared_target (redacted), tool: bareTool, tool_input: redacted+truncated(1500) }`.
 
    | key | type | instructions |
@@ -548,7 +555,7 @@ call (`decision: silent`, `reason: timeout`).
 ### 5.5 Session start — `SessionStart` (`hook-session.mjs`)
 
 No Jev call. One line of additionalContext:
-`rea-jev <version> · mode advise · Jev key: present (typesafe) · REA pinned 4.0.1 · /rea-jev:setup for diagnostics`.
+`rea-jev <version> · mode advise · Jev key: present (typesafe) · REA pinned 6.5.0 · /rea-jev:setup for diagnostics`.
 
 ---
 
@@ -586,7 +593,7 @@ name: reverse-engineer
 description: Reverse-engineer any shipped software with REA's MCP tools guided by Jev System 1 decisions — native Mach-O/ELF/PE binaries and .app bundles, Electron/ASAR and minified JavaScript, .NET assemblies, Android APKs, and live websites. Use when asked how a feature in an app works, to decompile or trace code, compare two builds, verify a port against the original, or recreate a feature from a binary. Not for ordinary analysis of a source repository you already have.
 license: MIT
 metadata:
-  rea_pin: "4.0.1"
+  rea_pin: "6.5.0"
   jev_model: "jev-1.13"
 ---
 ```

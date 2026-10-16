@@ -37,7 +37,7 @@ inferences, and unknowns kept apart with Evidence IDs.
 | Path | Role |
 |---|---|
 | `.claude-plugin/plugin.json`, `marketplace.json` | Manifest and single-repo marketplace; `userConfig` exposes the TypeSafe key (sensitive) and the mode. |
-| `.mcp.json` | Bundles REA: `npx -y rea-agents@4.0.1 mcp`. Tools surface as `mcp__plugin_rea-jev_rea__<tool>`. |
+| `.mcp.json` | Bundles REA: `npx -y rea-agents@6.5.0 mcp`. Tools surface as `mcp__plugin_rea-jev_rea__<tool>`. |
 | `hooks/hooks.json` | Registers the five hooks with `${CLAUDE_PLUGIN_ROOT}` paths and per-hook timeouts (5 to 25 s). |
 | `scripts/hook-session.mjs` | `SessionStart`: one status line; no Jev call. |
 | `scripts/hook-route.mjs` | `UserPromptSubmit`: deterministic sniff, then one Jev call with six questions, then a route note. |
@@ -52,10 +52,11 @@ inferences, and unknowns kept apart with Evidence IDs.
 | `scripts/lib/rea.mjs` | REA tool matcher, effect classes from the catalog, result parsing. |
 | `scripts/lib/sniff.mjs` | Path tokens, magic bytes, directory heuristics, keyword hit. |
 | `scripts/validate.mjs` | Repository self-check; `--write-catalog` regenerates the skill's tool catalog. |
+| `scripts/import-rea-catalog.mjs` | Regenerates `data/rea-tool-catalog.json` from an installed `rea-agents` package when the pin is bumped. |
 | `skills/reverse-engineer/` | The System 2 playbook and its references. |
 | `agents/` | `rea-investigator` (scoped fan-out worker) and `rea-verifier` (adversarial checker). |
 | `commands/` | `/rea-jev:setup` and `/rea-jev:investigate`. |
-| `data/rea-tool-catalog.json` | 116 tools from `rea-agents@4.0.1`: names, descriptions, effects, inputs. |
+| `data/rea-tool-catalog.json` | 116 tools from `rea-agents@6.5.0`: names, descriptions, effects, inputs. |
 | `tests/` | Offline `node:test` suite against `tests/fake-jev.mjs`. |
 
 ## Data flow per hook

@@ -4,6 +4,84 @@ All notable changes to rea-jev are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-10-16
+
+REA pin bumped from `rea-agents@4.0.1` to `rea-agents@6.5.0`: 207 tools, up
+from 116; `set_current_document` is gone, 92 tools are new. With the global
+`rea setup` registration also at 6.5.0, the plugin's bundled server and the
+global one expose the same catalog, so a session that loads both no longer
+sees two REA versions.
+
+### Changed
+
+- `data/rea-tool-catalog.json` regenerated from rea-agents 6.5.0 by the new
+  `scripts/import-rea-catalog.mjs` (`npm run catalog:import -- <package dir>`).
+  It reads the package's `dist/contracts/toolContracts.js`, since the flat
+  `generatedMcpToolCatalog.js` module the old procedure named no longer ships,
+  and resolves local `$defs` references so property enums survive. The catalog
+  shape drops `requiresSession` and `analysisOperation` (gone upstream) and
+  adds `returnsTargetContent`. `references/tool-catalog.md` regenerated: 17
+  catalog kinds, seven of them new (android, apktool, pcap, flutter, jeb, adb,
+  firmware providers). `docs/upstream-rea.md` describes the new procedure.
+- Effect classes cover the 92 new tools. `runtime` now includes the debugger,
+  instrumentation and device-control tools by name (`start_gdb_session`,
+  `gdb_console`, `start_rizin_debug_session`, `rizin_debug_command`,
+  `execute_rizin_command`, `cutter_command`, `start_frida_session`,
+  `instrument_with_frida`, `load_frida_script`, `resume_frida_session`,
+  `install_adb_package`, `uninstall_adb_package`, `push_adb_file`,
+  `start_adb_app`, `start_adb_activity`, `stop_adb_app`), every tool whose
+  catalog effects say `executesForeignCode` or `mutatesDevice`, and a
+  `capture_*`/`observe_*` tool that launches a process, mutates the target or
+  executes foreign code (`observe_web_execution`, `observe_native_calls` and
+  `capture_adb_screen` join; the passive `observe_web_session`,
+  `observe_javascript_runtime` and `capture_web_screenshot` stay `inspect`).
+  In 6.5.0 `launchesProcess` alone no longer means "runs the target": plutil,
+  lipo, apktool and adb set it on plain inspections, so it is no longer the
+  runtime signal by itself. `mutation` adds the `open_*`/`close_*` lifecycle
+  prefixes (`open_jeb_project`, `close_frida_session`, `close_gdb_session`,
+  `close_rizin_debug_session`), `unload_frida_script`, and the file-producing
+  `extract_firmware`, `recover_javascript_sources`, `pull_adb_file`,
+  `pull_adb_package`, `collect_adb_bugreport`. `status` adds
+  `*_session_status`, `list_cutter_sessions`, `list_frida_devices`,
+  `list_frida_processes`, `list_adb_devices`: live inventories that change
+  without an REA mutation, so a repeat is never denied as redundant.
+  `scripts/validate.mjs` carries the same rules; `tests/rea-catalog.test.mjs`
+  checks the two agree over all 207 tools.
+- Gate hard rule: the out-of-scope program check that applied to
+  `capture_process_scenario.executable` now reads `executable`, `program`,
+  `path`, `executable_path` and `application_path` on every runtime-class tool
+  (a Frida spawn, a Rizin debug session, an Electron scenario), resolved
+  against `working_directory`. The Jev path gate for files leaving `cwd` adds
+  `extract_firmware`, `export_web_scripts`, `recover_javascript_sources`,
+  `pull_adb_file`, `pull_adb_package`, `collect_adb_bugreport`; `device_*`
+  inputs name paths on the device and are not local paths.
+- `isStaticTool` is false for the runtime-class tools above and their session
+  tools, for `adb-provider` tools that reach a device, and for tools that read
+  recordings (`inspect_web_network_capture`, `inspect_pcap_capture`,
+  `inspect_packet_capture`, `inspect_packet_fields`, `inspect_recorded_crash`,
+  `decode_signal_recording`) or compare runtime captures
+  (`compare_process_captures`, `correlate_static_and_runtime`,
+  `find_changed_behavior`), so the evidence hook no longer tells Claude that
+  static analysis cannot establish execution on results that are runtime
+  evidence.
+- The `android_apk` route resolves to `inspect_android_package` (then
+  `decode_android_resources`, `search_android_classes`,
+  `inspect_android_class`, `trace_android_references`); the Android allowlist
+  in `validate.mjs` and the 4.0.1 caveats in the skill, route table, user
+  guide and upstream notes are gone. The route table gains the device, debugger
+  and recording tools and a table of the other artifact kinds 6.5.0 reads
+  (firmware, pcap, HAR, WASM, EVM, SQLite, Flutter, Go, Rust, PE resources,
+  JEB). The route hook's `target_kind` options are unchanged: those artifacts
+  still route as `native_binary` or `package_archive` by sniff.
+- `references/evidence-ledger.md` documents `record_unknown`'s required
+  `relationships` field (required since 4.0.1, missing from the table).
+
+### Not re-verified on 6.5.0
+
+- The launch-mode proxy allow-list behavior of `capture_browser_scenario`
+  (0.1.3) was observed on 4.0.1; the connect-mode workaround stays documented
+  with that caveat.
+
 ## [0.1.4] - 2026-10-07
 
 Hook noise found while mapping landonorris.com with the plugin active (48
@@ -153,3 +231,4 @@ Initial release.
 [0.1.2]: https://github.com/juan-viox/rea-jev/compare/v0.1.1...v0.1.2
 [0.1.3]: https://github.com/juan-viox/rea-jev/compare/v0.1.2...v0.1.3
 [0.1.4]: https://github.com/juan-viox/rea-jev/compare/v0.1.3...v0.1.4
+[0.2.0]: https://github.com/juan-viox/rea-jev/compare/v0.1.4...v0.2.0

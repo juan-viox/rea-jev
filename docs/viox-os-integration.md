@@ -62,7 +62,7 @@ ledgers and `decisions.jsonl`, both of which are in `.gitignore`.
 ## REA on the gateway host
 
 REA analyzes locally, so the gateway host needs what REA needs: Node 22.19+,
-and Hopper or Ghidra for native binaries (`npx -y rea-agents@4.0.1 doctor
+and Hopper or Ghidra for native binaries (`npx -y rea-agents@6.5.0 doctor
 --json` reports what is missing). JavaScript, managed, artifact, browser, and
 Electron tools work without a deep provider.
 

@@ -7,7 +7,7 @@ configuration yourself: propose the exact command for each fix and let the user
 run or approve it.
 
 1. `node "${CLAUDE_PLUGIN_ROOT}/scripts/jev.mjs" doctor --json`
-2. `npx -y rea-agents@4.0.1 doctor --json`
+2. `npx -y rea-agents@6.5.0 doctor --json`
    (If the environment sets `REA_JEV_REA_COMMAND`, the user runs REA from a fork
    or a local build. Run `$REA_JEV_REA_COMMAND doctor --json` instead and say
    which binary you used.)
@@ -63,7 +63,7 @@ Restart Claude Code after setting an environment variable so hooks inherit it.
 Native analysis (`open_binary` on Mach-O, ELF, or PE) needs one deep provider;
 JavaScript, managed, artifact, browser, and Electron tools work without it.
 
-- Hopper: `npx -y rea-agents@4.0.1 setup` shows its plan first and installs
+- Hopper: `npx -y rea-agents@6.5.0 setup` shows its plan first and installs
   Hopper only with explicit consent (`--install-hopper` together with `--yes`),
   or set `HOPPER_LAUNCHER_PATH` to an existing install.
 - Ghidra: set `GHIDRA_INSTALL_DIR` to an extracted Ghidra 12.1.4 directory with
@@ -80,7 +80,7 @@ alone; keep exactly one:
 
 - **Recommended:** keep the plugin's server and remove the global one with
   `claude mcp remove rea` (add `-s user`, `-s project`, or `-s local` to match
-  the scope `claude mcp list` shows), or run `npx -y rea-agents@4.0.1 uninstall`,
+  the scope `claude mcp list` shows), or run `npx -y rea-agents@6.5.0 uninstall`,
   which removes REA-owned registrations and REA's managed skill but keeps
   Hopper, Evidence files, and unrelated servers.
 - **Alternative** (users of a fork, or anyone who wants `rea setup` to keep
@@ -93,7 +93,7 @@ Restart Claude Code afterwards.
 ### REA skill identity drift (`skill:identity`, `config_drift`)
 
 REA's own `reverse-engineer-anything` skill is older than the installed package.
-It does not affect rea-jev. `npx -y rea-agents@4.0.1 setup` realigns it if the
+It does not affect rea-jev. `npx -y rea-agents@6.5.0 setup` realigns it if the
 user wants REA's canonical tool guide current.
 
 ### Hooks not firing
