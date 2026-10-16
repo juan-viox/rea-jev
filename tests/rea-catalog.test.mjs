@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { effectClass, isStaticTool, firstToolFor, loadCatalog, reaPin } from '../scripts/lib/rea.mjs';
+import { effectClass, isStaticTool, firstToolFor, describeFirstTool, loadCatalog, reaPin, FIRST_TOOL_BY_TARGET } from '../scripts/lib/rea.mjs';
 import { effectClass as validatorEffectClass } from '../scripts/validate.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -54,7 +54,45 @@ describe('catalog (rea-agents 6.5.0)', () => {
     assert.equal(a.note, undefined);
     assert.ok(a.then.includes('search_android_classes'));
   });
+  test('every first tool, variant, fallback and follow-up in FIRST_TOOL_BY_TARGET is in the catalog, with its printed inputs among the tool\'s inputs', () => {
+    const { byName } = loadCatalog();
+    const entries = [];
+    for (const [kind, e] of Object.entries(FIRST_TOOL_BY_TARGET)) {
+      entries.push([kind, e]);
+      for (const [v, ve] of Object.entries(e.variants ?? {})) entries.push([`${kind}:${v}`, ve]);
+      if (e.fallback) entries.push([`${kind}:fallback`, e.fallback]);
+    }
+    assert.ok(entries.length >= 15, `${entries.length} entries`);
+    for (const [label, e] of entries) {
+      if (!e.first) continue;
+      const tool = byName.get(e.first);
+      assert.ok(tool, `${label}: ${e.first} is not in the catalog`);
+      for (const a of String(e.arg ?? '').split(',').map((x) => x.trim()).filter(Boolean)) {
+        assert.ok((tool.required ?? []).includes(a) || Object.hasOwn(tool.props ?? {}, a), `${label}: ${e.first} takes no input ${a}`);
+      }
+      for (const t of [e.alt, ...(e.then ?? [])].filter(Boolean)) assert.ok(names.has(t), `${label}: follow-up ${t} is not in the catalog`);
+    }
+  });
+  test('the artifact kinds 6.5.0 reads resolve to their format-aware first tools', () => {
+    assert.equal(describeFirstTool('firmware_image'), 'inspect_firmware_regions(path), then extract_firmware / open_binary');
+    assert.equal(describeFirstTool('packet_capture'), 'inspect_pcap_capture(path), then inspect_packet_capture / inspect_packet_fields');
+    assert.equal(describeFirstTool('packet_capture', 'web_recording'), 'inspect_web_network_capture(capture_path, format), then export_web_scripts / analyze_javascript_application');
+    assert.equal(describeFirstTool('wasm_module'), 'inspect_wasm_artifact(path), then inspect_analysis_view / compare_wasm_interfaces');
+    assert.equal(describeFirstTool('sqlite_database'), 'inspect_sqlite_database(path)');
+    assert.equal(describeFirstTool('flutter_app'), 'identify_flutter_build(path), then inspect_dart_aot / inspect_android_package');
+    assert.equal(firstToolFor('packet_capture', 'web_recording').variant, 'web_recording');
+    assert.equal(firstToolFor('packet_capture').variant, null);
+    assert.equal(describeFirstTool('native_binary', 'web_recording'), describeFirstTool('native_binary'), 'a variant another kind lacks is ignored');
+    assert.equal(firstToolFor('native_binary', 'web_recording').variant, null);
+    for (const k of ['inspect_firmware_regions', 'inspect_pcap_capture', 'inspect_web_network_capture', 'inspect_wasm_artifact', 'inspect_sqlite_database', 'identify_flutter_build', 'inspect_dart_aot']) {
+      assert.equal(byNameRequired(k).includes('path') || byNameRequired(k).includes('capture_path'), true, k);
+    }
+  });
 });
+
+function byNameRequired(name) {
+  return loadCatalog().byName.get(name)?.required ?? [];
+}
 
 describe('effect classes', () => {
   test('runtime: debugger, instrumentation, device-control and active capture tools', () => {

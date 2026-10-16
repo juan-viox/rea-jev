@@ -9,7 +9,7 @@
     {
       "name": "rea-jev",
       "source": "./",
-      "description": "Reverse-engineer native binaries, Electron/JavaScript apps, .NET assemblies, Android packages, and live sites with REA, while Jev routes the target, gates risky calls, scores evidence, and checks completeness.",
+      "description": "Reverse-engineer native binaries, Electron/JavaScript apps, .NET assemblies, Android and Flutter packages, firmware images, packet captures, WebAssembly modules, SQLite databases, and live sites with REA, while Jev routes the target, gates risky calls, scores evidence, and checks completeness.",
       "category": "security",
       "tags": [
         "reverse-engineering",

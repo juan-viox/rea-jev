@@ -4,7 +4,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { sniffPrompt, magicOf, dirKind, isLoopback, extractEndpoints, safeUrl, KEYWORD_RE, describePath, targetKindFor, isHarnessEnvelope } from '../scripts/lib/sniff.mjs';
+import {
+  sniffPrompt, magicOf, dirKind, isLoopback, extractEndpoints, safeUrl, KEYWORD_RE, describePath, targetKindFor, isHarnessEnvelope,
+  webRecordingFormat, FIRMWARE_EXTENSIONS, TARGET_EXTENSIONS,
+} from '../scripts/lib/sniff.mjs';
+import { buildZip } from './hook-harness.mjs';
 
 // All fixtures are built at runtime in a temp dir; nothing binary is committed.
 let dir;
@@ -84,6 +88,136 @@ describe('magic detection', () => {
     assert.equal(magicOf(write('notes.txt', Buffer.from('hello world, nothing to see'))), null);
     assert.equal(magicOf(path.join(dir, 'does-not-exist.bin')), null);
     assert.equal(magicOf(write('tiny', Buffer.from('M'))), null);
+  });
+});
+
+describe('magic detection (artifact kinds rea-agents 6.5.0 reads)', () => {
+  test('WebAssembly, SQLite, pcap in all four byte orders, pcapng', () => {
+    assert.equal(magicOf(write('m.wasm', Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0, 0, 0]))), 'wasm');
+    assert.equal(magicOf(write('c.sqlite', Buffer.concat([Buffer.from('SQLite format 3\0', 'latin1'), Buffer.alloc(84)]))), 'sqlite');
+    for (const m of ['a1b2c3d4', 'd4c3b2a1', 'a1b23c4d', '4d3cb2a1']) {
+      assert.equal(magicOf(write(`${m}.pcap`, Buffer.concat([Buffer.from(m, 'hex'), Buffer.alloc(20)]))), 'pcap', m);
+    }
+    const shb = Buffer.alloc(28);
+    shb.write('0a0d0d0a', 0, 'hex');
+    shb.writeUInt32LE(28, 4);
+    shb.write('4d3c2b1a', 8, 'hex');
+    assert.equal(magicOf(write('x.pcapng', shb)), 'pcapng');
+    assert.equal(magicOf(write('not.pcapng', Buffer.concat([Buffer.from('0a0d0d0a', 'hex'), Buffer.alloc(20)]))), null, 'the block type alone is not pcapng');
+  });
+  test('zip containers: .saz → saz; a .apk whose central directory names libflutter.so → flutter_apk, otherwise apk', () => {
+    const pk = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(26)]);
+    assert.equal(magicOf(write('traffic.saz', pk)), 'saz');
+    const flutter = buildZip([
+      { name: 'AndroidManifest.xml', data: '<manifest/>' },
+      { name: 'lib/arm64-v8a/libflutter.so', data: Buffer.alloc(16) },
+      { name: 'lib/arm64-v8a/libapp.so', data: Buffer.alloc(16) },
+    ]);
+    assert.equal(magicOf(write('shop.apk', flutter)), 'flutter_apk');
+    const plain = buildZip([{ name: 'AndroidManifest.xml', data: '<manifest/>' }, { name: 'classes.dex', data: Buffer.alloc(16) }]);
+    assert.equal(magicOf(write('plain.apk', plain)), 'apk');
+    assert.equal(magicOf(write('shop.zip', flutter)), 'zip', 'the central directory is read for .apk only');
+    assert.equal(magicOf(write('headless.apk', pk)), 'apk', 'no central directory → a plain apk');
+  });
+  test('HAR and qlog from the JSON head; a .har whose head shows no log object has no magic', () => {
+    assert.equal(magicOf(write('a.har', '{"log":{"version":"1.2","creator":{"name":"x"},"entries":[]}}')), 'har');
+    assert.equal(magicOf(write('pretty.har', '{\n  "log": {\n    "version": "1.2",\n    "creator": {}\n  }\n}')), 'har');
+    assert.equal(magicOf(write('export.json', '﻿{"log":{"version":"1.2"}}')), 'har', 'a BOM and a .json name do not hide a HAR');
+    assert.equal(magicOf(write('other.json', '{"log":{"entries":[]}}')), null, 'without "version" only a .har name makes it a HAR');
+    assert.equal(magicOf(write('named.har', '{"log":{"entries":[]}}')), 'har');
+    assert.equal(magicOf(write('odd.har', `{${' '.repeat(80)}"log":{}}`)), null, 'nothing within the 64-byte head');
+    assert.equal(magicOf(write('t.qlog', '{"qlog_version":"0.3","qlog_format":"JSON","traces":[]}')), 'qlog');
+    assert.equal(magicOf(write('t.sqlog', '\x1e{"qlog_format":"JSON-SEQ","qlog_version":"0.3"}\n')), 'qlog');
+    assert.equal(magicOf(write('seq.txt', '\x1e{"a":1}\n')), null);
+  });
+  test('firmware container and filesystem magics', () => {
+    const cases = [
+      ['uimage', '27051956'], ['squashfs', '68737173'], ['squashfs', '73717368'], ['cramfs', '453dcd28'], ['cramfs', '28cd3d45'],
+      ['ubi', '55424923'], ['ubifs', '31181006'], ['trx', '48445230'], ['dtb', 'd00dfeed'], ['uf2', '5546320a'],
+      ['jffs2', '851901e0'], ['jffs2', '1985e001'],
+    ];
+    for (const [kind, hex] of cases) {
+      assert.equal(magicOf(write(`${kind}-${hex}.bin`, Buffer.concat([Buffer.from(hex, 'hex'), Buffer.alloc(28)]))), kind, `${kind} ${hex}`);
+    }
+    assert.equal(magicOf(write('boot.img', Buffer.concat([Buffer.from('ANDROID!', 'latin1'), Buffer.alloc(24)]))), 'android_boot');
+    assert.equal(magicOf(write('fw.dfu', Buffer.concat([Buffer.from('DfuSe', 'latin1'), Buffer.alloc(24)]))), 'dfuse');
+    assert.equal(magicOf(write('fw.hex', ':10000000000102030405060708090A0B0C0D0E0F78\n:00000001FF\n')), 'intel_hex');
+    assert.equal(magicOf(write('fw.srec', 'S00F000068656C6C6F202020202000003C\nS70500000000FA\n')), 'srec');
+    assert.equal(magicOf(write('smiley.txt', ':) see you at 10:00')), null);
+  });
+  test('a compressed stream is only compressed; the extension decides whether it is firmware', () => {
+    for (const [name, hex] of [['gz', '1f8b0800'], ['xz', 'fd377a585a00'], ['zst', '28b52ffd'], ['lz4', '04224d18'], ['bz2', '425a6839'], ['lzma', '5d000080']]) {
+      assert.equal(magicOf(write(`blob.${name}`, Buffer.concat([Buffer.from(hex, 'hex'), Buffer.alloc(28)]))), 'compressed', name);
+    }
+    const gz = Buffer.concat([Buffer.from('1f8b0800', 'hex'), Buffer.alloc(28)]);
+    const fw = write('router.fw', gz);
+    assert.equal(describePath(fw, dir).targetKind, 'firmware_image');
+    assert.equal(describePath(write('router.bin', gz), dir).targetKind, null, '.bin alone is not firmware');
+    assert.equal(describePath(write('disk.img', Buffer.alloc(64)), dir).targetKind, null, '.img alone is not firmware');
+    const s = sniffPrompt(`what is in ${fw}`, dir);
+    assert.ok(s.hints.includes(`path ${fw} is a compressed stream (gzip, xz, lzma, bzip2, zstd or lz4), firmware by its .fw extension`), s.hints.join('|'));
+  });
+});
+
+describe('target kinds and hints (artifact kinds rea-agents 6.5.0 reads)', () => {
+  test('magic → target kind', () => {
+    const byMagic = {
+      wasm: 'wasm_module', sqlite: 'sqlite_database', pcap: 'packet_capture', pcapng: 'packet_capture', har: 'packet_capture', saz: 'packet_capture', qlog: 'packet_capture',
+      flutter_apk: 'flutter_app', apk: 'android_apk', uimage: 'firmware_image', squashfs: 'firmware_image', cramfs: 'firmware_image', jffs2: 'firmware_image', ubi: 'firmware_image',
+      ubifs: 'firmware_image', trx: 'firmware_image', dtb: 'firmware_image', uf2: 'firmware_image', dfuse: 'firmware_image', android_boot: 'firmware_image', intel_hex: 'firmware_image', srec: 'firmware_image',
+    };
+    for (const [magic, kind] of Object.entries(byMagic)) assert.equal(targetKindFor({ exists: true, isDir: false, ext: 'bin', magic }), kind, magic);
+    assert.equal(targetKindFor({ exists: true, isDir: false, ext: 'fw', magic: 'compressed' }), 'firmware_image');
+    assert.equal(targetKindFor({ exists: true, isDir: false, ext: 'gz', magic: 'compressed' }), null);
+  });
+  test('extension fallback for a file that is missing or unrecognized; .bin and .img name nothing', () => {
+    const byExt = {
+      wasm: 'wasm_module', sqlite: 'sqlite_database', sqlite3: 'sqlite_database', db: 'sqlite_database', db3: 'sqlite_database',
+      pcap: 'packet_capture', pcapng: 'packet_capture', har: 'packet_capture', saz: 'packet_capture', qlog: 'packet_capture', sqlog: 'packet_capture', mitm: 'packet_capture',
+      fw: 'firmware_image', rom: 'firmware_image', hex: 'firmware_image', ihex: 'firmware_image', srec: 'firmware_image', uf2: 'firmware_image', ubi: 'firmware_image', squashfs: 'firmware_image', trx: 'firmware_image', dfu: 'firmware_image',
+      bin: null, img: null, json: null,
+    };
+    for (const [ext, kind] of Object.entries(byExt)) {
+      assert.equal(targetKindFor({ exists: false, isDir: false, ext, magic: null }), kind, ext);
+      assert.equal(describePath(`/nope/thing.${ext}`, dir).targetKind, kind, ext);
+    }
+    for (const ext of FIRMWARE_EXTENSIONS) assert.ok(TARGET_EXTENSIONS.includes(ext), `${ext} makes a bare token a path candidate`);
+    assert.ok(!TARGET_EXTENSIONS.includes('bin') && !TARGET_EXTENSIONS.includes('img'));
+  });
+  test('bare filenames with the new extensions are path tokens', () => {
+    // Names no other test writes into `dir`, so every token is a missing file.
+    const s = sniffPrompt('decode tele.pcapng, then compare core.wasm with state.db and the dump in dump.fw', dir);
+    assert.deepEqual(
+      s.pathTokens.map((t) => [t.raw, t.exists, t.targetKind]),
+      [['tele.pcapng', false, 'packet_capture'], ['core.wasm', false, 'wasm_module'], ['state.db', false, 'sqlite_database'], ['dump.fw', false, 'firmware_image']],
+    );
+    assert.equal(s.hints.filter((h) => h.includes('was not found on disk')).length, 4);
+  });
+  test('existing files carry their format in the hint and the first one is the declared target', () => {
+    const wasm = write('engine.wasm', Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0, 0, 0]));
+    const db = write('cache.sqlite', Buffer.concat([Buffer.from('SQLite format 3\0', 'latin1'), Buffer.alloc(84)]));
+    const har = write('login.har', '{"log":{"version":"1.2","entries":[]}}');
+    const s = sniffPrompt(`inspect ${wasm}, ${db} and ${har}`, dir);
+    assert.ok(s.hints.includes(`path ${wasm} is a WebAssembly module`), s.hints.join('|'));
+    assert.ok(s.hints.includes(`path ${db} is a SQLite 3 database`), s.hints.join('|'));
+    assert.ok(s.hints.includes(`path ${har} is a HAR web-traffic recording (JSON)`), s.hints.join('|'));
+    assert.equal(s.declaredTarget, wasm);
+  });
+});
+
+describe('webRecordingFormat', () => {
+  test('magic first, extension second, never for a pcap', () => {
+    assert.equal(webRecordingFormat({ ext: 'har', magic: 'har' }), 'har');
+    assert.equal(webRecordingFormat({ ext: 'json', magic: 'har' }), 'har');
+    assert.equal(webRecordingFormat({ ext: 'har', magic: null }), 'har');
+    assert.equal(webRecordingFormat({ ext: 'saz', magic: 'saz' }), 'saz');
+    assert.equal(webRecordingFormat({ ext: 'qlog', magic: 'qlog' }), 'qlog');
+    assert.equal(webRecordingFormat({ ext: 'sqlog', magic: null }), 'qlog');
+    assert.equal(webRecordingFormat({ ext: 'mitm', magic: null }), 'mitmproxy');
+    assert.equal(webRecordingFormat({ ext: 'pcap', magic: 'pcap' }), null);
+    assert.equal(webRecordingFormat({ ext: 'har', magic: 'pcap' }), null, 'a pcap wearing a .har name is a pcap');
+    assert.equal(webRecordingFormat({ ext: 'bin', magic: null }), null);
+    assert.equal(webRecordingFormat(null), null);
   });
 });
 
@@ -274,6 +408,10 @@ describe('keyword pre-filter', () => {
     'open it in Hopper and look at the xrefs',
     'what does libfoo.so do',
     'understand how the app talks to the server',
+    'unpack the firmware for this router',
+    'what is in this pcap',
+    'what does the wasm module export',
+    'read the packet capture from the device',
   ];
   const misses = [
     'fix the failing unit test in src/utils.ts',
@@ -282,6 +420,8 @@ describe('keyword pre-filter', () => {
     'rename the variable and run prettier',
     'summarize this meeting transcript',
     'help me with a regex for dates',
+    'add a sqlite table for sessions',
+    'fix the flutter widget padding',
   ];
   for (const p of hits) test(`hit: ${p}`, () => assert.equal(KEYWORD_RE.test(p), true));
   for (const p of misses) test(`miss: ${p}`, () => assert.equal(KEYWORD_RE.test(p), false));

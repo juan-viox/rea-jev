@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { startFakeJev } from './fake-jev.mjs';
-import { ROOT, SAMPLE_APP, hookEnv, payload, newSession, runHook, seedLedger, ledgerEvents, makeTmp } from './hook-harness.mjs';
+import { ROOT, SAMPLE_APP, hookEnv, payload, newSession, runHook, seedLedger, ledgerEvents, makeTmp, buildZip } from './hook-harness.mjs';
 
 const ROUTE_KEYS = ['is_re_task', 'target_kind', 'workflow', 'scope', 'needs_runtime', 'wants_build'];
 
@@ -118,7 +118,8 @@ describe('route block', () => {
     assert.deepEqual(Object.keys(body.questions).sort(), [...ROUTE_KEYS].sort());
     assert.equal(body.questions.is_re_task.type, 'noul');
     assert.equal(body.questions.target_kind.type, 'choice');
-    assert.equal(Object.keys(body.questions.target_kind.criteria).length, 9);
+    assert.equal(Object.keys(body.questions.target_kind.criteria).length, 14);
+    for (const k of ['firmware_image', 'packet_capture', 'wasm_module', 'sqlite_database', 'flutter_app']) assert.ok(k in body.questions.target_kind.criteria, k);
     assert.equal(body.questions.workflow.type, 'choice');
     assert.equal(Object.keys(body.questions.workflow.criteria).length, 9);
     assert.equal(body.questions.scope.type, 'score');
@@ -371,5 +372,66 @@ describe('follow-up bar', () => {
     const q = fake.requests[before].body.questions.is_re_task;
     assert.match(q.instructions, /Judging `prompt` alone \(ignore `active_target`\)/);
     assert.match(q.criteria.false, /even while an investigation is active/);
+  });
+});
+
+describe('format-aware kinds (rea-agents 6.5.0)', () => {
+  // Fixtures are built at runtime in the temp dir; nothing binary is committed.
+  let kinds;
+  before(() => {
+    kinds = path.join(tmp, 'kinds');
+    fs.mkdirSync(kinds, { recursive: true });
+    fs.writeFileSync(path.join(kinds, 'session.pcap'), Buffer.concat([Buffer.from([0xd4, 0xc3, 0xb2, 0xa1]), Buffer.alloc(20)]));
+    fs.writeFileSync(path.join(kinds, 'login.har'), '{"log":{"version":"1.2","creator":{"name":"x"},"entries":[]}}');
+    fs.writeFileSync(path.join(kinds, 'engine.wasm'), Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0, 0, 0]));
+    fs.writeFileSync(path.join(kinds, 'cache.sqlite'), Buffer.concat([Buffer.from('SQLite format 3\0', 'latin1'), Buffer.alloc(84)]));
+    fs.writeFileSync(path.join(kinds, 'router.bin'), Buffer.concat([Buffer.from([0x27, 0x05, 0x19, 0x56]), Buffer.alloc(60)]));
+    fs.writeFileSync(
+      path.join(kinds, 'shop.apk'),
+      buildZip([
+        { name: 'AndroidManifest.xml', data: '<manifest/>' },
+        { name: 'lib/arm64-v8a/libflutter.so', data: Buffer.alloc(16) },
+        { name: 'lib/arm64-v8a/libapp.so', data: Buffer.alloc(16) },
+      ]),
+    );
+  });
+  const cases = [
+    { file: 'session.pcap', kind: 'packet_capture', hint: 'is a pcap packet capture', first: /inspect_pcap_capture\(path\), then inspect_packet_capture \/ inspect_packet_fields/ },
+    { file: 'login.har', kind: 'packet_capture', hint: 'is a HAR web-traffic recording', first: /inspect_web_network_capture\(capture_path, format\), then export_web_scripts \/ analyze_javascript_application/ },
+    { file: 'engine.wasm', kind: 'wasm_module', hint: 'is a WebAssembly module', first: /inspect_wasm_artifact\(path\), then inspect_analysis_view \/ compare_wasm_interfaces/ },
+    { file: 'cache.sqlite', kind: 'sqlite_database', hint: 'is a SQLite 3 database', first: /inspect_sqlite_database\(path\)$/m },
+    { file: 'router.bin', kind: 'firmware_image', hint: 'is a U-Boot uImage firmware image', first: /inspect_firmware_regions\(path\), then extract_firmware \/ open_binary/ },
+    { file: 'shop.apk', kind: 'flutter_app', hint: 'is an Android package built with Flutter', first: /identify_flutter_build\(path\), then inspect_dart_aot \/ inspect_android_package/ },
+  ];
+  for (const c of cases) {
+    test(`${c.kind} (${c.file}): the sniff hint reaches Jev and the route block names the format-aware first tool`, async () => {
+      const before = fake.requests.length;
+      const session = newSession('route');
+      script({ is_re_task: 0.9, target_kind: c.kind });
+      const target = path.join(kinds, c.file);
+      const r = await runHook('hook-route', rePrompt(session, { cwd: kinds, prompt: `What does ${target} contain? Reverse engineer it.` }), env());
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(fake.requests.length, before + 1, 'exactly one Jev call');
+      const hints = fake.requests[before].body.state.sniff_hints;
+      assert.ok(hints.some((h) => h.startsWith(`path ${target} `) && h.includes(c.hint)), hints.join('|'));
+      const text = context(r);
+      assert.match(text, new RegExp(`^target: ${c.kind} \\(0\\.90\\) → first tool: `, 'm'));
+      assert.match(text, c.first);
+      assert.ok(text.split('\n').length <= 12);
+      const [ev] = ledgerEvents(tmp, session);
+      assert.equal(ev.declared_target, target);
+      assert.equal(ev.target_hint, c.kind);
+    });
+  }
+  test('the sniffed capture decides the packet_capture variant: a pcap on disk keeps the pcap tool even next to a named HAR; a named .har alone picks the web-recording tool', async () => {
+    script({ is_re_task: 0.9, target_kind: 'packet_capture' });
+    const pcap = path.join(kinds, 'session.pcap');
+    const both = await runHook('hook-route', rePrompt(newSession('route'), { cwd: kinds, prompt: `compare ${pcap} with the browser's export.har` }), env());
+    assert.match(context(both), /first tool: inspect_pcap_capture\(path\)/);
+    // export.har does not exist, so the keyword carries the prompt past the pre-filter and the extension picks the format.
+    const har = await runHook('hook-route', rePrompt(newSession('route'), { cwd: kinds, prompt: 'reverse engineer the login flow recorded in export.har' }), env());
+    assert.match(context(har), /first tool: inspect_web_network_capture\(capture_path, format\)/);
+    const none = await runHook('hook-route', rePrompt(newSession('route'), { cwd: kinds, prompt: 'inspect the packet capture from the device' }), env());
+    assert.match(context(none), /first tool: inspect_pcap_capture\(path\)/, 'no capture token at all → the pcap default');
   });
 });

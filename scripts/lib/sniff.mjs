@@ -2,7 +2,8 @@
  * Deterministic target sniffing for the route hook: path tokens, file magic,
  * directory heuristics, URLs, CDP / inspector endpoints, and the RE keyword
  * pre-filter. Read-only, bounded (≤16 tokens, ≤64 bytes per file plus one PE
- * header read), and silent on every error.
+ * header read, and for a `.apk` one bounded read of the zip central directory
+ * to tell a Flutter build from a plain package), and silent on every error.
  *
  * @module sniff
  */
@@ -12,8 +13,25 @@ import os from 'node:os';
 import path from 'node:path';
 import { redact } from './redact.mjs';
 
+/**
+ * Extensions that name a firmware image on their own. `.bin` and `.img` are
+ * not here: they name anything, so a file with one of them is firmware only
+ * when its magic says so.
+ */
+export const FIRMWARE_EXTENSIONS = Object.freeze(['fw', 'rom', 'hex', 'ihex', 'srec', 'uf2', 'ubi', 'squashfs', 'trx', 'dfu']);
+
+/** Recorded web traffic: extension → the `format` value `inspect_web_network_capture` takes. */
+const WEB_RECORDING_BY_EXT = Object.freeze({ har: 'har', saz: 'saz', qlog: 'qlog', sqlog: 'qlog', mitm: 'mitmproxy' });
+/** Recorded web traffic: magic → that same `format` value (mitmproxy's native flow files have no magic). */
+const WEB_RECORDING_BY_MAGIC = Object.freeze({ har: 'har', saz: 'saz', qlog: 'qlog' });
+
 /** File extensions that make a bare token a path candidate. */
-export const TARGET_EXTENSIONS = Object.freeze(['app', 'asar', 'apk', 'ipa', 'dmg', 'zip', 'exe', 'dll', 'dylib', 'so', 'hop', 'msix', 'appx', 'node']);
+export const TARGET_EXTENSIONS = Object.freeze([
+  'app', 'asar', 'apk', 'ipa', 'dmg', 'zip', 'exe', 'dll', 'dylib', 'so', 'hop', 'msix', 'appx', 'node',
+  // Artifact kinds rea-agents 6.5.0 reads with a format-aware tool.
+  'wasm', 'sqlite', 'sqlite3', 'db', 'db3', 'pcap', 'pcapng', 'har', 'saz', 'qlog', 'sqlog', 'mitm',
+  ...FIRMWARE_EXTENSIONS,
+]);
 
 /**
  * Reverse-engineering keyword pre-filter. Matches whole words (prefix
@@ -27,6 +45,7 @@ export const KEYWORD_RE = (() => {
     'how does .{0,60}(?:work|do)', 'understand how', 'trace .{0,40}(?:feature|flow|call)', 'recreate', 'clone the feature',
     'port(?:ing)? .{0,40}feature', 'strings? (?:in|from) the', 'symbols?', 'obfuscat\\w*', 'minified', 'bundle', 'source ?map',
     'cdp', 'devtools', 'inspector',
+    'firmware', 'pcap(?:ng)?', 'packet captures?', 'wasm', 'webassembly',
   ];
   return new RegExp(`(?<!\\w)(?:${words.join('|')})(?!\\w)|\\.(?:so|app|net)(?!\\w)`, 'i');
 })();
@@ -48,6 +67,15 @@ const INSPECT_FLAG_RE = /--inspect(?:-brk|-wait)?(?:[= ](?:([\w.[\]:-]+?):)?(\d{
 const TRAILING_PUNCT_RE = /[.,;:!?'"`)\]]+$/;
 /** Paths under these never get a magic read (device nodes, kernel pseudo-files can block or lie). */
 const NO_MAGIC_PREFIXES = ['/dev/', '/proc/', '/sys/'];
+/** pcap file magics: µs and ns timestamps, both byte orders. */
+const PCAP_MAGICS = new Set(['a1b2c3d4', 'd4c3b2a1', 'a1b23c4d', '4d3cb2a1']);
+/** Magics `firmwareMagic()` returns; each maps to `firmware_image`. */
+const FIRMWARE_MAGICS = new Set(['uimage', 'squashfs', 'cramfs', 'jffs2', 'ubi', 'ubifs', 'trx', 'dtb', 'uf2', 'dfuse', 'android_boot', 'intel_hex', 'srec']);
+/** Zip end-of-central-directory signature and the most it can sit from the end (22-byte record plus a 65535-byte comment). */
+const ZIP_EOCD_SIG = 0x06054b50;
+const ZIP_TAIL_MAX = 22 + 0xffff;
+/** Bytes of an APK's central directory read to look for the Flutter engine library. */
+const APK_DIRECTORY_MAX = 1 << 20;
 
 /**
  * @typedef {Object} PathToken
@@ -56,7 +84,7 @@ const NO_MAGIC_PREFIXES = ['/dev/', '/proc/', '/sys/'];
  * @property {boolean} exists
  * @property {boolean} isDir
  * @property {string} ext            lower-case extension without the dot ('' when none)
- * @property {string|null} magic     file: pe|managed_pe|native_pe|elf|macho|fat_macho|zip|apk|ipa|msix|appx|asar; dir: app_bundle|javascript_application|android; else null
+ * @property {string|null} magic     file: pe|managed_pe|native_pe|elf|macho|fat_macho|zip|apk|flutter_apk|ipa|msix|appx|saz|asar|wasm|sqlite|pcap|pcapng|har|qlog|compressed|a firmware magic (uimage, squashfs, cramfs, jffs2, ubi, ubifs, trx, dtb, uf2, dfuse, android_boot, intel_hex, srec); dir: app_bundle|javascript_application|android; else null
  * @property {string|null} targetKind route `target_kind` candidate derived from magic/ext, or null
  */
 
@@ -159,10 +187,17 @@ export function describePath(raw, cwd = process.cwd()) {
  * Detect a file's format from its leading bytes. Read-only; null on any
  * error or unknown format. `MZ` files get the PE CLI-header check:
  * data directory 14 with a non-zero RVA → `managed_pe`, else `native_pe`
- * (`pe` when the header cannot be parsed).
+ * (`pe` when the header cannot be parsed). A `PK` container is refined by
+ * extension, and a `.apk` by one bounded read of its central directory
+ * (`flutter_apk` when it names `libflutter.so`). `\0asm` → `wasm`,
+ * `SQLite format 3\0` → `sqlite`, the pcap and pcapng magics, the firmware
+ * container and filesystem magics (`firmwareMagic`), a compressed stream
+ * (`compressed`: gzip, xz, lzma, bzip2, zstd, lz4), and the text formats a
+ * JSON head reveals (`har`, `qlog`) or a hex record starts (`intel_hex`,
+ * `srec`).
  *
  * @param {string} filePath
- * @param {string} [ext] lower-case extension, used to refine zip containers
+ * @param {string} [ext] lower-case extension, used to refine zip containers and text formats
  * @returns {string|null}
  */
 export function magicOf(filePath, ext = path.extname(String(filePath)).replace(/^\./, '').toLowerCase()) {
@@ -178,13 +213,23 @@ export function magicOf(filePath, ext = path.extname(String(filePath)).replace(/
       const hex = b.subarray(0, 4).toString('hex');
       if (hex === 'cffaedfe' || hex === 'cefaedfe' || hex === 'feedfacf' || hex === 'feedface') return 'macho';
       if (hex === 'cafebabe' || hex === 'bebafeca') return 'fat_macho';
-      if (b[0] === 0x50 && b[1] === 0x4b && b[2] === 0x03 && b[3] === 0x04) return zipKind(ext);
+      if (b[0] === 0x50 && b[1] === 0x4b && b[2] === 0x03 && b[3] === 0x04) return ext === 'apk' ? apkFlavor(fd) : zipKind(ext);
+      if (hex === '0061736d') return 'wasm';
+      if (PCAP_MAGICS.has(hex)) return 'pcap';
+      if (hex === '0a0d0d0a' && n >= 12) {
+        const order = b.subarray(8, 12).toString('hex');
+        if (order === '1a2b3c4d' || order === '4d3c2b1a') return 'pcapng';
+      }
+      const fw = firmwareMagic(b, n, hex);
+      if (fw) return fw;
+      if (compressedMagic(b, n, hex)) return 'compressed';
     }
+    if (n >= 16 && b.subarray(0, 16).toString('latin1') === 'SQLite format 3\0') return 'sqlite';
     if (n >= 20 && b.readUInt32LE(0) === 4) {
       const idx = b.indexOf('{"files"');
       if (idx >= 4 && idx <= 24) return 'asar';
     }
-    return null;
+    return textKind(b, n, ext);
   } catch {
     return null;
   } finally {
@@ -312,6 +357,7 @@ export function isLoopback(endpoint) {
  */
 export function targetKindFor(t) {
   const magic = t.magic ?? null;
+  if (magic && FIRMWARE_MAGICS.has(magic)) return 'firmware_image';
   switch (magic) {
     case 'app_bundle':
     case 'macho':
@@ -328,12 +374,26 @@ export function targetKindFor(t) {
     case 'apk':
     case 'android':
       return 'android_apk';
+    case 'flutter_apk':
+      return 'flutter_app';
     case 'zip':
     case 'ipa':
     case 'msix':
     case 'appx':
       return 'package_archive';
+    case 'wasm':
+      return 'wasm_module';
+    case 'sqlite':
+      return 'sqlite_database';
+    case 'pcap':
+    case 'pcapng':
+    case 'har':
+    case 'saz':
+    case 'qlog':
+      return 'packet_capture';
     default:
+      // `compressed` and unknown magics fall through to the extension: a
+      // compressed stream is firmware only when its extension says so.
       break;
   }
   if (t.exists && t.isDir) return null;
@@ -356,9 +416,40 @@ export function targetKindFor(t) {
     case 'msix':
     case 'appx':
       return 'package_archive';
+    case 'wasm':
+      return 'wasm_module';
+    case 'sqlite':
+    case 'sqlite3':
+    case 'db':
+    case 'db3':
+      return 'sqlite_database';
+    case 'pcap':
+    case 'pcapng':
+    case 'har':
+    case 'saz':
+    case 'qlog':
+    case 'sqlog':
+    case 'mitm':
+      return 'packet_capture';
     default:
-      return null;
+      return FIRMWARE_EXTENSIONS.includes(t.ext) ? 'firmware_image' : null;
   }
+}
+
+/**
+ * The `format` value `inspect_web_network_capture` takes for a recorded-web-
+ * traffic token (`har`, `mitmproxy`, `saz`, `qlog`): from its magic when the
+ * file was read, else from its extension. Null for a pcap/pcapng capture and
+ * for anything else. mitmproxy's native flow files have no magic and no fixed
+ * extension, so only `.mitm` names them; otherwise the user has to say.
+ *
+ * @param {{ext?: string, magic?: string|null}|null|undefined} t
+ * @returns {'har'|'mitmproxy'|'saz'|'qlog'|null}
+ */
+export function webRecordingFormat(t) {
+  if (!t) return null;
+  if (t.magic) return WEB_RECORDING_BY_MAGIC[t.magic] ?? null;
+  return WEB_RECORDING_BY_EXT[t.ext ?? ''] ?? null;
 }
 
 const MAGIC_LABELS = {
@@ -377,10 +468,33 @@ const MAGIC_LABELS = {
   msix: 'an MSIX package',
   appx: 'an APPX package',
   asar: 'an ASAR archive (Electron)',
+  saz: 'a Fiddler SAZ web-traffic archive',
+  flutter_apk: 'an Android package built with Flutter (apk with libflutter.so)',
+  wasm: 'a WebAssembly module',
+  sqlite: 'a SQLite 3 database',
+  pcap: 'a pcap packet capture',
+  pcapng: 'a pcapng packet capture',
+  har: 'a HAR web-traffic recording (JSON)',
+  qlog: 'a qlog QUIC trace',
+  uimage: 'a U-Boot uImage firmware image',
+  squashfs: 'a SquashFS filesystem image (firmware)',
+  cramfs: 'a CramFS filesystem image (firmware)',
+  jffs2: 'a JFFS2 flash filesystem image (firmware)',
+  ubi: 'a UBI flash volume image (firmware)',
+  ubifs: 'a UBIFS filesystem image (firmware)',
+  trx: 'a Broadcom TRX firmware image',
+  dtb: 'a flattened device tree or FIT firmware image',
+  uf2: 'a UF2 firmware image',
+  dfuse: 'a DfuSe firmware image',
+  android_boot: 'an Android boot image (firmware)',
+  intel_hex: 'an Intel HEX firmware image',
+  srec: 'a Motorola S-record firmware image',
+  compressed: 'a compressed stream (gzip, xz, lzma, bzip2, zstd or lz4)',
 };
 
 function hintFor(t) {
   if (t.exists) {
+    if (t.magic === 'compressed' && FIRMWARE_EXTENSIONS.includes(t.ext)) return `path ${t.abs} is ${MAGIC_LABELS.compressed}, firmware by its .${t.ext} extension`;
     if (t.magic && MAGIC_LABELS[t.magic]) return `path ${t.abs} is ${MAGIC_LABELS[t.magic]}`;
     if (t.isDir) return `path ${t.abs} is a directory`;
     return `path ${t.abs} exists (format not recognized${t.ext ? `, .${t.ext}` : ''})`;
@@ -459,9 +573,125 @@ function zipKind(ext) {
       return 'msix';
     case 'appx':
       return 'appx';
+    case 'saz':
+      return 'saz';
     default:
       return 'zip';
   }
+}
+
+/**
+ * `flutter_apk` when the package's central directory names `libflutter.so`
+ * (the Flutter engine, shipped next to the `libapp.so` Dart AOT snapshot),
+ * else `apk`. Reads the end-of-central-directory record from the file's tail
+ * and at most APK_DIRECTORY_MAX bytes of the directory; a ZIP64 archive, a
+ * directory that does not fit the cap without showing the name, or any read
+ * error stays `apk`.
+ *
+ * @param {number} fd open file descriptor
+ * @returns {'apk'|'flutter_apk'}
+ */
+function apkFlavor(fd) {
+  try {
+    const size = fs.fstatSync(fd).size;
+    if (size < 22) return 'apk';
+    const tailLen = Math.min(size, ZIP_TAIL_MAX);
+    const tail = Buffer.alloc(tailLen);
+    const got = fs.readSync(fd, tail, 0, tailLen, size - tailLen);
+    let eocd = -1;
+    for (let i = got - 22; i >= 0; i -= 1) {
+      if (tail.readUInt32LE(i) === ZIP_EOCD_SIG) {
+        eocd = i;
+        break;
+      }
+    }
+    if (eocd < 0) return 'apk';
+    const dirSize = tail.readUInt32LE(eocd + 12);
+    const dirOffset = tail.readUInt32LE(eocd + 16);
+    if (dirSize === 0xffffffff || dirOffset === 0xffffffff || dirOffset >= size) return 'apk';
+    const len = Math.min(dirSize, APK_DIRECTORY_MAX, size - dirOffset);
+    const dir = Buffer.alloc(len);
+    const read = fs.readSync(fd, dir, 0, len, dirOffset);
+    return dir.subarray(0, read).includes('libflutter.so') ? 'flutter_apk' : 'apk';
+  } catch {
+    return 'apk';
+  }
+}
+
+/**
+ * Firmware container and filesystem magics, both byte orders where the
+ * format allows both. Null when none matches.
+ *
+ * @param {Buffer} b leading bytes
+ * @param {number} n bytes read
+ * @param {string} hex the first four bytes as hex
+ * @returns {string|null}
+ */
+function firmwareMagic(b, n, hex) {
+  if (hex === '27051956') return 'uimage'; // U-Boot legacy image
+  if (hex === '68737173' || hex === '73717368') return 'squashfs'; // hsqs / sqsh
+  if (hex === '453dcd28' || hex === '28cd3d45') return 'cramfs';
+  if (hex === '55424923') return 'ubi'; // UBI#
+  if (hex === '31181006' || hex === '06101831') return 'ubifs';
+  if (hex === '48445230') return 'trx'; // HDR0
+  if (hex === 'd00dfeed') return 'dtb'; // flattened device tree, FIT image
+  if (hex === '5546320a') return 'uf2'; // UF2\n
+  if ((b[0] === 0x85 && b[1] === 0x19 && b[3] === 0xe0) || (b[0] === 0x19 && b[1] === 0x85 && b[2] === 0xe0)) return 'jffs2';
+  if (n >= 8 && b.subarray(0, 8).toString('latin1') === 'ANDROID!') return 'android_boot';
+  if (n >= 5 && b.subarray(0, 5).toString('latin1') === 'DfuSe') return 'dfuse';
+  return null;
+}
+
+/**
+ * True for the compressed-stream magics firmware blobs commonly wear: gzip,
+ * xz, lzma (alone), bzip2, zstd, lz4 frame.
+ *
+ * @param {Buffer} b
+ * @param {number} n
+ * @param {string} hex
+ * @returns {boolean}
+ */
+function compressedMagic(b, n, hex) {
+  if (b[0] === 0x1f && b[1] === 0x8b) return true;
+  if (n >= 6 && hex === 'fd377a58' && b[4] === 0x5a && b[5] === 0x00) return true;
+  if (hex === '28b52ffd' || hex === '04224d18') return true;
+  if (b[0] === 0x42 && b[1] === 0x5a && b[2] === 0x68) return true; // BZh
+  if (b[0] === 0x5d && b[1] === 0x00 && b[2] === 0x00) return true; // lzma_alone, the usual properties byte
+  return false;
+}
+
+/**
+ * Text formats a 64-byte head reveals: a JSON object whose first keys show a
+ * HAR (`"log"`, with `"version"` or a `.har` extension) or a qlog
+ * (`"qlog_version"` / `"qlog_format"`, or a JSON-SEQ record separator on a
+ * `.qlog`/`.sqlog` file), an Intel HEX record (`:` + 8 hex digits), or a
+ * Motorola S-record header (`S0` + 6 hex digits). Null otherwise.
+ *
+ * @param {Buffer} b
+ * @param {number} n
+ * @param {string} ext
+ * @returns {'har'|'qlog'|'intel_hex'|'srec'|null}
+ */
+function textKind(b, n, ext) {
+  let i = 0;
+  if (n >= 3 && b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf) i = 3;
+  let jsonSeq = false;
+  if (i < n && b[i] === 0x1e) {
+    jsonSeq = true;
+    i += 1;
+  }
+  while (i < n && (b[i] === 0x20 || b[i] === 0x09 || b[i] === 0x0a || b[i] === 0x0d)) i += 1;
+  if (i >= n) return null;
+  const head = b.subarray(i, n).toString('latin1');
+  if (head[0] === '{') {
+    if (/"qlog_(?:version|format)"/.test(head) || (jsonSeq && (ext === 'qlog' || ext === 'sqlog'))) return 'qlog';
+    if (/"log"\s*:/.test(head) && (ext === 'har' || /"version"\s*:/.test(head))) return 'har';
+    return null;
+  }
+  if (jsonSeq) return ext === 'qlog' || ext === 'sqlog' ? 'qlog' : null;
+  if (/^:[0-9A-Fa-f]{8}/.test(head)) return 'intel_hex';
+  if (/^S0[0-9A-Fa-f]{6}/.test(head)) return 'srec';
+  return null;
 }
 
 function endpointKind(url) {
