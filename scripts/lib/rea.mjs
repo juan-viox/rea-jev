@@ -32,33 +32,69 @@ export const EVIDENCE_ID_RE = /\bev_[0-9a-f]{64}\b/g;
 /** The four effect classes, used by the gate, evidence and stop hooks. */
 export const EFFECT_CLASSES = Object.freeze(['runtime', 'mutation', 'status', 'inspect']);
 
-const MUTATION_EXACT = new Set(['unset_bookmark', 'record_unknown', 'update_unknown', 'extract_artifact', 'open_binary', 'close_binary']);
-const MUTATION_PREFIX = ['set_', 'annotate_', 'import_', 'export_'];
-const STATUS_EXACT = new Set(['binary_session', 'list_unknowns', 'get_navigation_context', 'get_evidence_bundle', 'verify_unknown_resolution', 'list_documents']);
+/** Mutations by exact name: unknown bookkeeping and the tools that write files the session did not have before. */
+const MUTATION_EXACT = new Set([
+  'unset_bookmark', 'record_unknown', 'update_unknown',
+  'extract_artifact', 'extract_firmware', 'recover_javascript_sources',
+  'pull_adb_file', 'pull_adb_package', 'collect_adb_bugreport',
+  'unload_frida_script',
+]);
+/** `open_*` / `close_*` cover target and debugger session lifecycle: open_binary, open_jeb_project, close_frida_session, close_gdb_session, … */
+const MUTATION_PREFIX = ['set_', 'annotate_', 'import_', 'export_', 'open_', 'close_'];
+/** Session state, plus live inventories (attached devices, processes, debugger sessions) that change without an REA mutation. */
+const STATUS_EXACT = new Set([
+  'binary_session', 'list_unknowns', 'get_navigation_context', 'get_evidence_bundle', 'verify_unknown_resolution', 'list_documents',
+  'list_cutter_sessions', 'list_frida_devices', 'list_frida_processes', 'list_adb_devices',
+]);
 const STATUS_PREFIX = ['current_'];
+const STATUS_SUFFIX = ['_session_status'];
 const RUNTIME_PREFIX = ['capture_', 'observe_'];
-/** Catalog kinds whose network-attaching tools observe a live browser, Electron or Node process. */
-const LIVE_PROVIDER_KINDS = new Set(['browser-provider', 'electron-provider', 'runtime-provider']);
-/** Tools that compare or reconcile runtime captures; their results legitimately describe observed behavior. */
-const RUNTIME_EVIDENCE_TOOLS = new Set(['compare_web_captures', 'compare_web_screenshots', 'reconcile_javascript_runtime']);
-/** Name fallback for `isStaticTool` when the catalog is unavailable. */
+/**
+ * Debugger, instrumentation and device-control tools (rea-agents ≥ 6): they
+ * run, attach to, or change the target or an attached device. Runtime-class by
+ * name, because their catalog flags are uneven (`start_gdb_session` and
+ * `start_frida_session` carry no `executesForeignCode`).
+ */
+const RUNTIME_EXACT = new Set([
+  'start_frida_session', 'instrument_with_frida', 'load_frida_script', 'resume_frida_session',
+  'start_gdb_session', 'gdb_console',
+  'start_rizin_debug_session', 'rizin_debug_command', 'execute_rizin_command', 'cutter_command',
+  'install_adb_package', 'uninstall_adb_package', 'push_adb_file', 'start_adb_app', 'start_adb_activity', 'stop_adb_app',
+]);
+/** Catalog kinds whose network-attaching tools observe a live browser, Electron or Node process, or an attached Android device. */
+const LIVE_PROVIDER_KINDS = new Set(['browser-provider', 'electron-provider', 'runtime-provider', 'adb-provider']);
+/** Tools that read, compare or reconcile runtime captures and recordings; their results legitimately describe observed behavior. */
+const RUNTIME_EVIDENCE_TOOLS = new Set([
+  'compare_web_captures', 'compare_web_screenshots', 'reconcile_javascript_runtime',
+  'compare_process_captures', 'correlate_static_and_runtime', 'find_changed_behavior',
+  'inspect_web_network_capture', 'inspect_packet_capture', 'inspect_packet_fields', 'inspect_pcap_capture',
+  'inspect_recorded_crash', 'decode_signal_recording',
+]);
+/** Debugger and instrumentation session tools that talk to a live process without being runtime-class themselves. */
+const LIVE_SESSION_TOOLS = new Set([
+  'list_frida_devices', 'list_frida_processes', 'frida_session_status', 'close_frida_session', 'unload_frida_script',
+  'gdb_session_status', 'close_gdb_session', 'rizin_debug_session_status', 'close_rizin_debug_session', 'list_cutter_sessions',
+]);
+/** Name fallback for `isStaticTool` when the catalog is unavailable (every `*_adb_*` tool is live too). */
 const LIVE_TOOL_FALLBACK = new Set([
-  'list_browser_targets', 'inspect_web_page', 'analyze_web_bundle', 'discover_webmcp_tools',
+  'list_browser_targets', 'inspect_web_page', 'analyze_web_bundle', 'discover_webmcp_tools', 'inspect_web_event_listeners',
   'list_electron_targets', 'inspect_electron_page', 'list_javascript_runtime_targets',
+  ...LIVE_SESSION_TOOLS,
 ]);
 /** Evidence IDs kept per result; the rest is counted (`evidenceCount`) so a hostile artifact cannot bloat the ledger. */
 export const EVIDENCE_IDS_MAX = 64;
 
 /**
  * First tool per route `target_kind`, from REA's own skill. `then` lists the
- * typical follow-ups. `android_apk` names a tool that the pinned release may
- * not ship; `firstToolFor()` resolves the fallback against the catalog.
+ * typical follow-ups. `android_apk` names a tool that releases before
+ * rea-agents 6 did not ship; `firstToolFor()` resolves the fallback against
+ * the catalog.
  */
 export const FIRST_TOOL_BY_TARGET = Object.freeze({
   native_binary: { first: 'open_binary', arg: 'path', then: ['binary_overview', 'search_strings', 'trace_feature'] },
   javascript_application: { first: 'analyze_javascript_application', arg: 'input_path', then: ['trace_application_feature', 'trace_javascript_semantics'] },
   managed_assembly: { first: 'inspect_managed_artifact', arg: 'path', then: ['inspect_managed_members', 'inspect_managed_native_boundaries'] },
-  android_apk: { first: 'inspect_android_package', arg: 'path', then: ['inspect_artifact'], fallback: { first: 'open_binary', arg: 'path', then: ['inspect_artifact', 'extract_artifact'] } },
+  android_apk: { first: 'inspect_android_package', arg: 'path', then: ['decode_android_resources', 'search_android_classes', 'inspect_android_class', 'trace_android_references'], fallback: { first: 'open_binary', arg: 'path', then: ['inspect_artifact', 'extract_artifact'] } },
   package_archive: { first: 'open_binary', arg: 'path', then: ['inspect_artifact', 'extract_artifact'] },
   website_in_browser: { first: 'list_browser_targets', arg: 'cdp_endpoint', then: ['inspect_web_page', 'analyze_web_bundle', 'observe_web_session'] },
   electron_or_node_runtime: { first: 'list_electron_targets', arg: 'cdp_endpoint', alt: 'list_javascript_runtime_targets', then: ['inspect_electron_page', 'observe_javascript_runtime'] },
@@ -145,14 +181,21 @@ export function toolKind(toolName) {
 }
 
 /**
- * Effect class of a tool:
- * - `mutation`: `set_*`, `annotate_*`, `import_*`, `export_*`, `unset_bookmark`,
- *   `record_unknown`, `update_unknown`, `extract_artifact`, `open_binary`, `close_binary`
+ * Effect class of a tool, evaluated in this order:
+ * - `mutation`: `set_*`, `annotate_*`, `import_*`, `export_*`, `open_*`, `close_*`,
+ *   `unset_bookmark`, `record_unknown`, `update_unknown`, `extract_artifact`,
+ *   `extract_firmware`, `recover_javascript_sources`, `pull_adb_file`,
+ *   `pull_adb_package`, `collect_adb_bugreport`, `unload_frida_script`
  * - `status`: `binary_session`, `list_unknowns`, `get_navigation_context`, `current_*`,
- *   `get_evidence_bundle`, `verify_unknown_resolution`, `list_documents`
- * - `runtime`: `capture_*` / `observe_*` whose catalog entry has `launchesProcess`
- *   (tools missing from the catalog are classified by name alone)
- * - `inspect`: everything else
+ *   `*_session_status`, `get_evidence_bundle`, `verify_unknown_resolution`, `list_documents`,
+ *   `list_cutter_sessions`, `list_frida_devices`, `list_frida_processes`, `list_adb_devices`
+ * - `runtime`: the debugger, instrumentation and device-control tools in
+ *   `RUNTIME_EXACT`; a `capture_*` / `observe_*` tool whose catalog entry has
+ *   `launchesProcess`, `mutatesTarget` or `executesForeignCode` (missing from the
+ *   catalog: runtime by name alone); any other tool whose catalog entry has
+ *   `executesForeignCode` or `mutatesDevice`
+ * - `inspect`: everything else, including the passive attach tools
+ *   (`observe_web_session`, `observe_javascript_runtime`, `capture_web_screenshot`)
  *
  * @param {string} toolName full or bare
  * @returns {'runtime'|'mutation'|'status'|'inspect'}
@@ -160,34 +203,45 @@ export function toolKind(toolName) {
 export function effectClass(toolName) {
   const name = bareToolName(toolName);
   if (MUTATION_EXACT.has(name) || MUTATION_PREFIX.some((p) => name.startsWith(p))) return 'mutation';
-  if (STATUS_EXACT.has(name) || STATUS_PREFIX.some((p) => name.startsWith(p))) return 'status';
+  if (STATUS_EXACT.has(name) || STATUS_PREFIX.some((p) => name.startsWith(p)) || STATUS_SUFFIX.some((s) => name.endsWith(s))) return 'status';
+  if (RUNTIME_EXACT.has(name)) return 'runtime';
+  const fx = catalogTool(name)?.effects ?? null;
   if (RUNTIME_PREFIX.some((p) => name.startsWith(p))) {
-    const entry = catalogTool(name);
-    const launches = entry ? entry.effects?.launchesProcess === true : true;
-    if (launches) return 'runtime';
+    if (!fx || fx.launchesProcess === true || fx.mutatesTarget === true || fx.executesForeignCode === true) return 'runtime';
   }
+  if (fx && (fx.executesForeignCode === true || fx.mutatesDevice === true)) return 'runtime';
   return 'inspect';
 }
 
 /**
  * True when the tool performs static analysis, i.e. its result cannot describe
  * anything as executed or observed. False for every `capture_*` / `observe_*`
- * tool (whether or not it launches a process), for the passive CDP / Inspector
- * tools that attach to a live browser, Electron or Node process (catalog kind
- * browser-/electron-/runtime-provider with `accessesNetwork`), and for the
- * tools that compare or reconcile runtime captures. `analyze_javascript_application`
- * stays static: it reads files. The gate's `effectClass` is unchanged by this.
+ * tool (whether or not it launches a process), for the debugger, instrumentation
+ * and device-control tools (`RUNTIME_EXACT`, their session tools, and any tool
+ * whose catalog entry has `executesForeignCode` or `mutatesDevice`), for the
+ * passive CDP / Inspector / ADB tools that attach to a live browser, Electron or
+ * Node process or an Android device (catalog kind browser-/electron-/runtime-/
+ * adb-provider with `accessesNetwork`), and for the tools that read, compare or
+ * reconcile runtime captures and recordings (`inspect_web_network_capture`,
+ * `inspect_pcap_capture`, `compare_process_captures`, …). File-reading analysis
+ * such as `analyze_javascript_application`, `inspect_android_package` or
+ * `inspect_firmware_regions` stays static. The gate's `effectClass` is unchanged
+ * by this.
  *
  * @param {string} toolName
  * @returns {boolean}
  */
 export function isStaticTool(toolName) {
   const name = bareToolName(toolName);
-  if (RUNTIME_PREFIX.some((p) => name.startsWith(p))) return false;
-  if (RUNTIME_EVIDENCE_TOOLS.has(name)) return false;
+  if (RUNTIME_PREFIX.some((p) => name.startsWith(p)) || RUNTIME_EXACT.has(name)) return false;
+  if (RUNTIME_EVIDENCE_TOOLS.has(name) || LIVE_SESSION_TOOLS.has(name)) return false;
   const entry = catalogTool(name);
-  if (entry) return !(LIVE_PROVIDER_KINDS.has(entry.kind) && entry.effects?.accessesNetwork === true);
-  return !LIVE_TOOL_FALLBACK.has(name);
+  if (entry) {
+    const fx = entry.effects ?? {};
+    if (fx.executesForeignCode === true || fx.mutatesDevice === true) return false;
+    return !(LIVE_PROVIDER_KINDS.has(entry.kind) && fx.accessesNetwork === true);
+  }
+  return !LIVE_TOOL_FALLBACK.has(name) && !/_adb_/.test(name);
 }
 
 /**
