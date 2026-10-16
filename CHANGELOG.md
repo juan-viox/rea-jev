@@ -4,6 +4,85 @@ All notable changes to rea-jev are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-10-16
+
+The route hook now names the artifact kinds rea-agents 6.5.0 reads with a
+format-aware tool. A firmware image, a packet capture or web recording, a
+WebAssembly module, a SQLite database or a Flutter APK used to route as
+`native_binary` or `package_archive` and leave the tool choice to Claude once
+the file was open; each now has its own `target_kind`, its own sniff rules and
+its own first tool in the route note.
+
+### Added
+
+- Five `target_kind` options in `scripts/hook-route.mjs` (the nine existing
+  ones are unchanged): `firmware_image`, `packet_capture` (pcap/pcapng, plus
+  recorded web traffic: HAR, mitmproxy, Fiddler SAZ, qlog), `wasm_module`,
+  `sqlite_database`, `flutter_app`. The Jev choice has fourteen options.
+- `FIRST_TOOL_BY_TARGET` in `scripts/lib/rea.mjs`: `firmware_image` →
+  `inspect_firmware_regions(path)` then `extract_firmware` / `open_binary`;
+  `packet_capture` → `inspect_pcap_capture(path)` then
+  `inspect_packet_capture` / `inspect_packet_fields`, with a `web_recording`
+  variant → `inspect_web_network_capture(capture_path, format)` then
+  `export_web_scripts` / `analyze_javascript_application`; `wasm_module` →
+  `inspect_wasm_artifact(path)` then `inspect_analysis_view` /
+  `compare_wasm_interfaces`; `sqlite_database` → `inspect_sqlite_database(path)`;
+  `flutter_app` → `identify_flutter_build(path)` then `inspect_dart_aot` /
+  `inspect_android_package`. `firstToolFor(kind, variant)` and
+  `describeFirstTool(kind, variant)` take the variant; a variant another kind
+  lacks is ignored. Every name and printed input is checked against the
+  207-tool catalog by `tests/rea-catalog.test.mjs`.
+- Deterministic sniff rules in `scripts/lib/sniff.mjs`. Magic: `\0asm` → WASM;
+  `SQLite format 3\0` → SQLite; the four pcap magics and the pcapng section
+  header; a JSON head with `"log"` and `"version"` (or `"log"` on a `.har`) →
+  HAR; `"qlog_version"`/`"qlog_format"` or a JSON-SEQ `.qlog`/`.sqlog` → qlog;
+  `PK` + `.saz` → SAZ; a `.apk` whose central directory names `libflutter.so`
+  → Flutter (one bounded read, ≤ 1 MiB, of the directory; ZIP64 or an
+  oversized directory stays a plain APK); the firmware container and
+  filesystem magics (uImage, SquashFS, CramFS, JFFS2, UBI, UBIFS, TRX,
+  device tree / FIT, UF2, DfuSe, `ANDROID!`, Intel HEX, S-record); a gzip /
+  xz / lzma / bzip2 / zstd / lz4 stream is `compressed` and firmware only
+  when its extension says so. Extensions: `.wasm .sqlite .sqlite3 .db .db3
+  .pcap .pcapng .har .saz .qlog .sqlog .mitm` and the firmware extensions
+  `.fw .rom .hex .ihex .srec .uf2 .ubi .squashfs .trx .dfu` make a bare token
+  a path candidate and resolve a missing or unrecognized file; `.bin` and
+  `.img` alone name nothing. `targetKindFor` maps each to its kind;
+  `webRecordingFormat(token)` gives the `format` value
+  `inspect_web_network_capture` takes (`har`, `mitmproxy`, `saz`, `qlog`),
+  magic first, extension second, never for a pcap. Hints name the format
+  (`path … is a pcapng packet capture`, `… is an Android package built with
+  Flutter (apk with libflutter.so)`). The keyword pre-filter adds `firmware`,
+  `pcap`/`pcapng`, `packet capture`, `wasm`, `webassembly`; `sqlite` and
+  `flutter` stay out (ordinary coding words).
+- The route note's variant is decided by the sniffed file, not by Jev: when
+  Jev names `packet_capture` and the first existing capture token (or, absent
+  one, the first named) is a HAR, mitmproxy, SAZ or qlog recording, the line
+  prints `inspect_web_network_capture(capture_path, format)`; otherwise the
+  pcap tool. The format itself is in the hint line.
+- Tests: `tests/sniff.test.mjs` covers every new magic, extension fallback,
+  hint and `webRecordingFormat`; `tests/hook-route.test.mjs` builds a pcap, a
+  HAR, a WASM module, a SQLite file, a uImage and a Flutter APK at runtime and
+  checks each reaches Jev with its sniff hint and gets its first tool, plus the
+  pcap-next-to-HAR and HAR-alone variant cases; `tests/hook-harness.mjs` gains
+  `buildZip` (a stored zip with a central directory; nothing binary is
+  committed).
+
+### Changed
+
+- `references/route-table.md`: the five kinds move from "Other targets added
+  in rea-agents 6.5.0" into the main table with their sniff rules, first
+  tools, follow-ups and what static evidence cannot establish; the sniff
+  section lists the new magics, extensions and the APK directory read; the
+  remaining other targets (sigrok, EVM, Go/Rust, PE resources, crash reports,
+  Electron fuses, JEB, app graphs) keep their table. DESIGN.md §5.1 and
+  `docs/decision-points.md` carry the fourteen options and the first-tool
+  table; `commands/investigate.md` and the skill's routing paragraph name the
+  new first tools; `references/system1-decision-points.md` says fourteen
+  kinds.
+- The sniffer reads the first 64 bytes of a regular file (as before) plus, for
+  a `.apk`, the zip end-of-central-directory record and at most 1 MiB of the
+  central directory. Nothing else about its bounds changes.
+
 ## [0.2.0] - 2026-10-16
 
 REA pin bumped from `rea-agents@4.0.1` to `rea-agents@6.5.0`: 207 tools, up

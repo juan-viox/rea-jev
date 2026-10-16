@@ -88,7 +88,11 @@ export const EVIDENCE_IDS_MAX = 64;
  * First tool per route `target_kind`, from REA's own skill. `then` lists the
  * typical follow-ups. `android_apk` names a tool that releases before
  * rea-agents 6 did not ship; `firstToolFor()` resolves the fallback against
- * the catalog.
+ * the catalog. A `variants` map holds sub-routes the sniff decides once Jev
+ * has named the kind: `packet_capture.web_recording` is a HAR, mitmproxy,
+ * SAZ or qlog file, read by `inspect_web_network_capture` rather than by the
+ * pcap tool. `arg` is the required input (or inputs, comma-separated) the
+ * route block prints.
  */
 export const FIRST_TOOL_BY_TARGET = Object.freeze({
   native_binary: { first: 'open_binary', arg: 'path', then: ['binary_overview', 'search_strings', 'trace_feature'] },
@@ -96,6 +100,18 @@ export const FIRST_TOOL_BY_TARGET = Object.freeze({
   managed_assembly: { first: 'inspect_managed_artifact', arg: 'path', then: ['inspect_managed_members', 'inspect_managed_native_boundaries'] },
   android_apk: { first: 'inspect_android_package', arg: 'path', then: ['decode_android_resources', 'search_android_classes', 'inspect_android_class', 'trace_android_references'], fallback: { first: 'open_binary', arg: 'path', then: ['inspect_artifact', 'extract_artifact'] } },
   package_archive: { first: 'open_binary', arg: 'path', then: ['inspect_artifact', 'extract_artifact'] },
+  firmware_image: { first: 'inspect_firmware_regions', arg: 'path', then: ['extract_firmware', 'open_binary'] },
+  packet_capture: {
+    first: 'inspect_pcap_capture',
+    arg: 'path',
+    then: ['inspect_packet_capture', 'inspect_packet_fields'],
+    variants: {
+      web_recording: { first: 'inspect_web_network_capture', arg: 'capture_path, format', then: ['export_web_scripts', 'analyze_javascript_application'] },
+    },
+  },
+  wasm_module: { first: 'inspect_wasm_artifact', arg: 'path', then: ['inspect_analysis_view', 'compare_wasm_interfaces'] },
+  sqlite_database: { first: 'inspect_sqlite_database', arg: 'path', then: [] },
+  flutter_app: { first: 'identify_flutter_build', arg: 'path', then: ['inspect_dart_aot', 'inspect_android_package'] },
   website_in_browser: { first: 'list_browser_targets', arg: 'cdp_endpoint', then: ['inspect_web_page', 'analyze_web_bundle', 'observe_web_session'] },
   electron_or_node_runtime: { first: 'list_electron_targets', arg: 'cdp_endpoint', alt: 'list_javascript_runtime_targets', then: ['inspect_electron_page', 'observe_javascript_runtime'] },
   source_repository: { first: null, note: 'ordinary source code; REA is not needed' },
@@ -246,20 +262,25 @@ export function isStaticTool(toolName) {
 
 /**
  * Resolve the first tool for a route target, applying the catalog fallback
- * (e.g. Android tools absent from the pinned release).
+ * (e.g. Android tools absent from the pinned release). `variant` selects a
+ * sub-route from the entry's `variants` (`packet_capture` + `web_recording`);
+ * a variant the kind does not have is ignored.
  *
  * @param {string} targetKind one of the `target_kind` options
- * @returns {{first: string|null, arg?: string, then: string[], alt?: string, note?: string, available: boolean}}
+ * @param {string|null} [variant]
+ * @returns {{first: string|null, arg?: string, then: string[], alt?: string, note?: string, variant: string|null, available: boolean}}
  */
-export function firstToolFor(targetKind) {
-  const entry = FIRST_TOOL_BY_TARGET[targetKind];
-  if (!entry) return { first: null, then: [], note: 'unknown target kind', available: false };
+export function firstToolFor(targetKind, variant = null) {
+  const base = FIRST_TOOL_BY_TARGET[targetKind];
+  if (!base) return { first: null, then: [], note: 'unknown target kind', variant: null, available: false };
+  const chosen = variant && base.variants && Object.hasOwn(base.variants, variant) ? base.variants[variant] : null;
+  const entry = chosen ?? base;
   const { byName } = loadCatalog();
   const known = (name) => byName.size === 0 || byName.has(name);
   if (entry.first && !known(entry.first) && entry.fallback) {
-    return { ...entry.fallback, then: [...entry.fallback.then], available: true, note: `${entry.first} is not in rea-agents ${reaPin() ?? ''}`.trim() };
+    return { ...entry.fallback, then: [...entry.fallback.then], variant: chosen ? variant : null, available: true, note: `${entry.first} is not in rea-agents ${reaPin() ?? ''}`.trim() };
   }
-  return { first: entry.first, arg: entry.arg, alt: entry.alt, then: [...(entry.then ?? [])], note: entry.note, available: entry.first ? known(entry.first) : false };
+  return { first: entry.first, arg: entry.arg, alt: entry.alt, then: [...(entry.then ?? [])], note: entry.note, variant: chosen ? variant : null, available: entry.first ? known(entry.first) : false };
 }
 
 /**
@@ -267,10 +288,11 @@ export function firstToolFor(targetKind) {
  * `open_binary(path), then binary_overview / search_strings / trace_feature`.
  *
  * @param {string} targetKind
+ * @param {string|null} [variant] see `firstToolFor`
  * @returns {string}
  */
-export function describeFirstTool(targetKind) {
-  const t = firstToolFor(targetKind);
+export function describeFirstTool(targetKind, variant = null) {
+  const t = firstToolFor(targetKind, variant);
   if (!t.first) return t.note ?? 'no REA tool applies';
   const head = t.arg ? `${t.first}(${t.arg})` : t.first;
   const alt = t.alt ? ` or ${t.alt}` : '';

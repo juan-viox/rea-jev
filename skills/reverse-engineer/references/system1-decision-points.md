@@ -15,7 +15,7 @@ The plugin option `CLAUDE_PLUGIN_OPTION_MODE` wins over `REA_JEV_MODE` when set.
 
 ## 1. Route — `UserPromptSubmit`
 
-**Fires** only when a deterministic pre-filter holds: the prompt matches the reverse-engineering keyword set, a path token exists on disk, a URL/CDP/inspector endpoint is present, or the ledger already shows REA activity this session. The host's own envelopes (a prompt that is nothing but a `<task-notification>`, an `<agent-message>` or similar host markup) never fire it and leave the ledger untouched. Jev then answers, in one call: `is_re_task` (noul), `target_kind` (choice over the nine kinds in [route-table.md](route-table.md)), `workflow` (choice: `investigate_feature`, `compare_versions`, `verify_reconstruction`, `trace_crash_or_bug`, `audit_unknowns`, `capture_runtime_behavior`, `build_from_findings`, `overview`, `other`), `scope` (score 0–3), `needs_runtime` (noul), `wants_build` (noul).
+**Fires** only when a deterministic pre-filter holds: the prompt matches the reverse-engineering keyword set, a path token exists on disk, a URL/CDP/inspector endpoint is present, or the ledger already shows REA activity this session. The host's own envelopes (a prompt that is nothing but a `<task-notification>`, an `<agent-message>` or similar host markup) never fire it and leave the ledger untouched. Jev then answers, in one call: `is_re_task` (noul), `target_kind` (choice over the fourteen kinds in [route-table.md](route-table.md)), `workflow` (choice: `investigate_feature`, `compare_versions`, `verify_reconstruction`, `trace_crash_or_bug`, `audit_unknowns`, `capture_runtime_behavior`, `build_from_findings`, `overview`, `other`), `scope` (score 0–3), `needs_runtime` (noul), `wants_build` (noul).
 
 **May say** (≤ 12 lines):
 

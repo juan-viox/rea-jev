@@ -11,11 +11,14 @@
  * 2. One Jev call with six questions (is_re_task, target_kind, workflow, scope,
  *    needs_runtime, wants_build).
  * 3. Policy: not an RE task → silent; ambiguous target → ask the user which
- *    artifact; otherwise inject a compact route block (≤ 12 lines). A prompt
- *    that reached Jev only because the ledger shows earlier REA activity (no
- *    keyword, path, or endpoint of its own) must clear the higher
- *    T_ROUTE_RE_FOLLOWUP bar: an active target pulls `is_re_task` up for
- *    unrelated follow-ups such as "fix the warning" or "merge it".
+ *    artifact; otherwise inject a compact route block (≤ 12 lines) naming the
+ *    first tool for the kind. Where one kind has two format-aware tools
+ *    (`packet_capture`: a pcap vs a HAR/mitmproxy/SAZ/qlog recording) the
+ *    sniffed file decides the variant, not the note. A prompt that reached
+ *    Jev only because the ledger shows earlier REA activity (no keyword,
+ *    path, or endpoint of its own) must clear the higher T_ROUTE_RE_FOLLOWUP
+ *    bar: an active target pulls `is_re_task` up for unrelated follow-ups
+ *    such as "fix the warning" or "merge it".
  * 4. Ledger: a `route` event with `declared_target`.
  *
  * Fails open: any error, timeout, or Jev failure → exit 0, empty stdout.
@@ -28,7 +31,7 @@ import { askJev, confidenceOf, topChoices, noul, choice, score, resolveTimeoutMs
 import { excerpt } from './lib/redact.mjs';
 import { readEvents, summarize, appendEvent, logDecision } from './lib/ledger.mjs';
 import { describeFirstTool } from './lib/rea.mjs';
-import { sniffPrompt, isHarnessEnvelope } from './lib/sniff.mjs';
+import { sniffPrompt, isHarnessEnvelope, webRecordingFormat } from './lib/sniff.mjs';
 
 /** Hard ceiling for the whole hook, under the 10 s hooks.json timeout. */
 const SAFETY_MS = 9000;
@@ -69,6 +72,11 @@ function routeQuestions() {
       managed_assembly: '.NET PE/CLI .dll or .exe',
       android_apk: 'Android .apk package',
       package_archive: '.zip, .ipa, .dmg, .msix, .appx or other container that must be inventoried before choosing a deeper tool',
+      firmware_image: 'Embedded firmware image or flash dump (uImage, SquashFS, UBI, Android boot image, Intel HEX) to map and extract before any binary is opened',
+      packet_capture: 'Recorded network traffic: a pcap/pcapng packet capture, or a HAR, mitmproxy, Fiddler SAZ or qlog web recording',
+      wasm_module: 'WebAssembly .wasm module, on its own or next to its JavaScript glue',
+      sqlite_database: 'SQLite database file (.sqlite, .db) shipped with or written by an app',
+      flutter_app: 'Android .apk built with Flutter (libflutter.so engine plus a libapp.so Dart AOT snapshot)',
       website_in_browser: 'A web page or site, or a Chrome DevTools endpoint',
       electron_or_node_runtime: 'A running Electron or Node process exposing an inspector endpoint',
       source_repository: 'Ordinary source code the user already has; REA is not needed',
@@ -121,6 +129,25 @@ function intrinsicSignal(sniff) {
   return Boolean(
     sniff.keywordHit || sniff.pathTokens.some((t) => t.exists) || sniff.urls.length || sniff.cdpEndpoints.length || sniff.inspectorEndpoints.length,
   );
+}
+
+/**
+ * A sub-route the sniffed file decides once Jev has named the kind:
+ * `web_recording` when the target is `packet_capture` and the capture token is
+ * a HAR, mitmproxy, SAZ or qlog recording rather than a pcap. The first
+ * existing capture token decides; absent any existing one, the first named.
+ * The format itself is in the hint line. Null when the kind has no variants.
+ *
+ * @param {string|undefined} targetKind
+ * @param {import('./lib/sniff.mjs').Sniff} sniff
+ * @returns {string|null}
+ */
+function routeVariant(targetKind, sniff) {
+  if (targetKind !== 'packet_capture') return null;
+  const captures = (sniff?.pathTokens ?? []).filter((t) => t.targetKind === 'packet_capture');
+  if (!captures.length) return null;
+  const pick = captures.find((t) => t.exists) ?? captures[0];
+  return webRecordingFormat(pick) ? 'web_recording' : null;
 }
 
 /**
@@ -192,7 +219,7 @@ function decideRoute(answers, ctx) {
 
   const lines = [
     header,
-    `target: ${target.choice} (${fmt(probabilityOf(target, target.choice))}) → first tool: ${describeFirstTool(target.choice)}`,
+    `target: ${target.choice} (${fmt(probabilityOf(target, target.choice))}) → first tool: ${describeFirstTool(target.choice, routeVariant(target.choice, ctx.sniff))}`,
     workflowLine,
     ...ctx.sniff.hints.slice(0, MAX_HINT_LINES).map((h) => `hint: ${h}`),
   ];

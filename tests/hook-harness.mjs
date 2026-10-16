@@ -12,6 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { crc32 } from 'node:zlib';
 import { appendEvent, readEvents } from '../scripts/lib/ledger.mjs';
 
 /** Repository root. */
@@ -137,4 +138,54 @@ export function ledgerEvents(home, sessionId) {
  */
 export function makeTmp(label) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `rea-jev-${label}-`));
+}
+
+/**
+ * A stored (uncompressed) zip archive with the given entries, for sniff
+ * fixtures built at runtime (an APK with or without the Flutter engine, a
+ * Fiddler SAZ). Minimal: local headers, a central directory and the
+ * end-of-central-directory record; no data descriptors, no ZIP64.
+ *
+ * @param {Array<{name: string, data?: Buffer|string}>} entries
+ * @returns {Buffer}
+ */
+export function buildZip(entries) {
+  const parts = [];
+  const directory = [];
+  let offset = 0;
+  for (const e of entries) {
+    const name = Buffer.from(e.name, 'utf8');
+    const data = Buffer.isBuffer(e.data) ? e.data : Buffer.from(e.data ?? '', 'utf8');
+    const crc = crc32(data);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4); // version needed
+    local.writeUInt16LE(0, 8); // method: stored
+    local.writeUInt16LE(0x21, 12); // DOS date 1980-01-01
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4); // version made by
+    central.writeUInt16LE(20, 6); // version needed
+    central.writeUInt16LE(0x21, 14);
+    central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(data.length, 20);
+    central.writeUInt32LE(data.length, 24);
+    central.writeUInt16LE(name.length, 28);
+    central.writeUInt32LE(offset, 42);
+    parts.push(local, name, data);
+    directory.push(central, name);
+    offset += local.length + name.length + data.length;
+  }
+  const dir = Buffer.concat(directory);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(entries.length, 8);
+  eocd.writeUInt16LE(entries.length, 10);
+  eocd.writeUInt32LE(dir.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+  return Buffer.concat([...parts, dir, eocd]);
 }
