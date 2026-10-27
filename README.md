@@ -124,7 +124,7 @@ Set with the plugin option **mode** or `REA_JEV_MODE`.
 ## How this relates to REA
 
 - REA is consumed as the published npm package `rea-agents`, pinned in
-  `.mcp.json` and in `data/rea-tool-catalog.json` (207 tools from 6.5.0). The
+  `.mcp.json` and in `data/rea-tool-catalog.json` (229 tools from 6.8.0). The
   plugin does not vendor REA's source; bumping the pin is a documented procedure
   in [docs/upstream-rea.md](docs/upstream-rea.md).
 - If you already ran `rea setup` for Claude Code, REA is registered twice (the

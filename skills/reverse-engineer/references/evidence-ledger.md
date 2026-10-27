@@ -32,7 +32,7 @@ Keep a finding ledger per investigation: claim, Evidence IDs, evidence type (sta
 
 ## Recording unknowns with `record_unknown`
 
-Call `record_unknown` for a gap that affects a conclusion the user will rely on; keep trivial gaps in your notes. All of these fields are **required** (rea-agents 6.5.0 schema; `supporting_evidence_ids`, `contradicting_evidence_ids` and `comparison_conclusion_scope` are optional):
+Call `record_unknown` for a gap that affects a conclusion the user will rely on; keep trivial gaps in your notes. All of these fields are **required** (rea-agents 6.8.0 schema, unchanged since 4.0.1; `supporting_evidence_ids`, `contradicting_evidence_ids` and `comparison_conclusion_scope` are optional):
 
 | Field | Type | What to put |
 |---|---|---|

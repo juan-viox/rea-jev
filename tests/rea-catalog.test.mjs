@@ -1,6 +1,6 @@
 /**
  * Effect classes and the static/runtime predicate against the pinned catalog
- * (rea-agents 6.5.0): the debugger, instrumentation and ADB tools added since
+ * (rea-agents 6.8.0): the debugger, instrumentation and ADB tools added since
  * 4.0.1, the lifecycle tools, live inventories, the Android route, and
  * agreement between scripts/lib/rea.mjs and the validator's local copy over
  * every catalog tool.
@@ -28,6 +28,7 @@ const MUTATION = [
   'open_binary', 'close_binary', 'open_jeb_project', 'close_frida_session', 'close_gdb_session', 'close_rizin_debug_session', 'unload_frida_script',
   'extract_artifact', 'extract_firmware', 'recover_javascript_sources', 'export_web_scripts', 'export_evidence_bundle', 'import_evidence_bundle',
   'pull_adb_file', 'pull_adb_package', 'collect_adb_bugreport', 'annotate_native_function', 'set_comment', 'unset_bookmark', 'record_unknown', 'update_unknown',
+  'decompile_all', 'export_environment_bundle', 'update_analysis_settings', 'open_bundle_resources',
 ];
 const STATUS = [
   'binary_session', 'list_unknowns', 'get_navigation_context', 'get_evidence_bundle', 'verify_unknown_resolution', 'list_documents', 'current_address',
@@ -36,14 +37,21 @@ const STATUS = [
 const PASSIVE_INSPECT = [
   'observe_web_session', 'observe_javascript_runtime', 'capture_web_screenshot', 'inspect_web_page', 'list_browser_targets', 'inspect_web_event_listeners',
   'inspect_adb_device', 'list_adb_packages', 'read_adb_logcat', 'inspect_android_package', 'decode_android_resources', 'search_strings', 'inspect_pcap_capture',
+  'inspect_analysis_settings', 'inspect_apple_ips', 'inspect_signature', 'match_native_functions',
+];
+/** Format-aware readers rea-agents 6.8.0 added; every one is inspect-class and static. */
+const INSPECT_680 = [
+  'inspect_apk_signature', 'inspect_apple_ips', 'inspect_byte_entropy', 'inspect_desktop_application', 'inspect_devicetree', 'inspect_elf_notes',
+  'inspect_erlang_beam', 'inspect_gpu_code_objects', 'inspect_il2cpp_metadata', 'inspect_kernel_module', 'inspect_model_artifact', 'inspect_native_exports',
+  'inspect_pe_certificates', 'inspect_pe_imports', 'inspect_pe_load_config', 'inspect_python_pyc',
 ];
 
-describe('catalog (rea-agents 6.5.0)', () => {
+describe('catalog (rea-agents 6.8.0)', () => {
   test('pin, count, and every tool named in these tests exists', () => {
-    assert.equal(reaPin(), '6.5.0');
-    assert.equal(loadCatalog().toolCount, 207);
+    assert.equal(reaPin(), '6.8.0');
+    assert.equal(loadCatalog().toolCount, 229);
     assert.equal(catalog.tool_count, catalog.tools.length);
-    for (const n of [...RUNTIME, ...MUTATION, ...STATUS, ...PASSIVE_INSPECT]) assert.ok(names.has(n), `${n} is not in the catalog`);
+    for (const n of [...RUNTIME, ...MUTATION, ...STATUS, ...PASSIVE_INSPECT, ...INSPECT_680]) assert.ok(names.has(n), `${n} is not in the catalog`);
     assert.ok(!names.has('set_current_document'), 'set_current_document left the catalog in 6.x');
   });
   test('the Android route resolves to inspect_android_package with no fallback note', () => {
@@ -73,8 +81,24 @@ describe('catalog (rea-agents 6.5.0)', () => {
       for (const t of [e.alt, ...(e.then ?? [])].filter(Boolean)) assert.ok(names.has(t), `${label}: follow-up ${t} is not in the catalog`);
     }
   });
+  test('the artifact kinds 6.8.0 reads resolve to their format-aware first tools', () => {
+    assert.equal(describeFirstTool('crash_report'), 'inspect_apple_ips(path), then open_binary');
+    assert.equal(describeFirstTool('kernel_module'), 'inspect_kernel_module(path), then inspect_elf_notes / open_binary');
+    assert.equal(describeFirstTool('beam_module'), 'inspect_erlang_beam(path)');
+    assert.equal(describeFirstTool('python_bytecode'), 'inspect_python_pyc(path)');
+    assert.equal(describeFirstTool('model_artifact'), 'inspect_model_artifact(path), then inspect_byte_entropy');
+    assert.equal(describeFirstTool('il2cpp_metadata'), 'inspect_il2cpp_metadata(path), then open_binary');
+    assert.equal(describeFirstTool('gpu_code_object'), 'inspect_gpu_code_objects(path)');
+    assert.equal(describeFirstTool('desktop_application'), 'inspect_desktop_application(path), then open_binary / inspect_managed_artifact / inspect_il2cpp_metadata / analyze_javascript_application');
+    assert.equal(describeFirstTool('firmware_image'), 'inspect_firmware_regions(path), then extract_firmware / inspect_devicetree / open_binary');
+    assert.ok(firstToolFor('android_apk').then.includes('inspect_apk_signature'));
+    for (const t of INSPECT_680) {
+      assert.equal(effectClass(t), 'inspect', t);
+      assert.equal(isStaticTool(t), true, t);
+    }
+    assert.equal(Object.keys(FIRST_TOOL_BY_TARGET).length, 22, 'one entry per Jev target_kind option');
+  });
   test('the artifact kinds 6.5.0 reads resolve to their format-aware first tools', () => {
-    assert.equal(describeFirstTool('firmware_image'), 'inspect_firmware_regions(path), then extract_firmware / open_binary');
     assert.equal(describeFirstTool('packet_capture'), 'inspect_pcap_capture(path), then inspect_packet_capture / inspect_packet_fields');
     assert.equal(describeFirstTool('packet_capture', 'web_recording'), 'inspect_web_network_capture(capture_path, format), then export_web_scripts / analyze_javascript_application');
     assert.equal(describeFirstTool('wasm_module'), 'inspect_wasm_artifact(path), then inspect_analysis_view / compare_wasm_interfaces');
@@ -124,7 +148,7 @@ describe('effect classes', () => {
     for (const t of catalog.tools) assert.equal(validatorEffectClass(t), effectClass(t.name), t.name);
     const counts = { runtime: 0, mutation: 0, status: 0, inspect: 0 };
     for (const t of catalog.tools) counts[effectClass(t.name)] += 1;
-    assert.equal(counts.runtime + counts.mutation + counts.status + counts.inspect, 207);
+    assert.equal(counts.runtime + counts.mutation + counts.status + counts.inspect, 229);
     assert.ok(counts.runtime >= RUNTIME.length, `runtime class has ${counts.runtime} tools`);
   });
 });

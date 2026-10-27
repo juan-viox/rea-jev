@@ -6,7 +6,7 @@ vendor REA's source. Two files pin the version:
 
 | File | What it holds |
 |---|---|
-| `.mcp.json` | `npx -y rea-agents@6.5.0 mcp`, the server Claude Code starts for the plugin |
+| `.mcp.json` | `npx -y rea-agents@6.8.0 mcp`, the server Claude Code starts for the plugin |
 | `data/rea-tool-catalog.json` | The MCP tool catalog extracted from the same release by `scripts/import-rea-catalog.mjs`: `version`, `tool_count`, and for every tool its `name`, `title`, `kind`, `description`, `annotations`, `effects`, `returnsTargetContent`, `required`, and `props` (each prop: `type`, `description`, `enum` when the schema has one) |
 
 `scripts/validate.mjs` fails when the two versions differ, and
@@ -102,7 +102,7 @@ To run a fork or a local build instead:
    list).
 4. Export `REA_JEV_REA_COMMAND="node /path/to/fork/scripts/rea.mjs"`. The
    hooks do not use it; `/rea-jev:setup` does, to run the fork's `doctor`
-   instead of `npx -y rea-agents@6.5.0 doctor` and to say which binary it
+   instead of `npx -y rea-agents@6.8.0 doctor` and to say which binary it
    diagnosed. Nothing else in rea-jev changes.
 5. If the fork adds or renames tools, regenerate `data/rea-tool-catalog.json`
    from the fork's build with `node scripts/import-rea-catalog.mjs

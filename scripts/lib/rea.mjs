@@ -32,12 +32,17 @@ export const EVIDENCE_ID_RE = /\bev_[0-9a-f]{64}\b/g;
 /** The four effect classes, used by the gate, evidence and stop hooks. */
 export const EFFECT_CLASSES = Object.freeze(['runtime', 'mutation', 'status', 'inspect']);
 
-/** Mutations by exact name: unknown bookkeeping and the tools that write files the session did not have before. */
+/**
+ * Mutations by exact name: unknown bookkeeping, the tools that write files the
+ * session did not have before (`decompile_all` writes pseudocode into a
+ * caller-selected directory), and `update_analysis_settings`, which changes
+ * REA's runtime limits for the rest of the session.
+ */
 const MUTATION_EXACT = new Set([
   'unset_bookmark', 'record_unknown', 'update_unknown',
-  'extract_artifact', 'extract_firmware', 'recover_javascript_sources',
+  'extract_artifact', 'extract_firmware', 'recover_javascript_sources', 'decompile_all',
   'pull_adb_file', 'pull_adb_package', 'collect_adb_bugreport',
-  'unload_frida_script',
+  'unload_frida_script', 'update_analysis_settings',
 ]);
 /** `open_*` / `close_*` cover target and debugger session lifecycle: open_binary, open_jeb_project, close_frida_session, close_gdb_session, … */
 const MUTATION_PREFIX = ['set_', 'annotate_', 'import_', 'export_', 'open_', 'close_'];
@@ -98,9 +103,9 @@ export const FIRST_TOOL_BY_TARGET = Object.freeze({
   native_binary: { first: 'open_binary', arg: 'path', then: ['binary_overview', 'search_strings', 'trace_feature'] },
   javascript_application: { first: 'analyze_javascript_application', arg: 'input_path', then: ['trace_application_feature', 'trace_javascript_semantics'] },
   managed_assembly: { first: 'inspect_managed_artifact', arg: 'path', then: ['inspect_managed_members', 'inspect_managed_native_boundaries'] },
-  android_apk: { first: 'inspect_android_package', arg: 'path', then: ['decode_android_resources', 'search_android_classes', 'inspect_android_class', 'trace_android_references'], fallback: { first: 'open_binary', arg: 'path', then: ['inspect_artifact', 'extract_artifact'] } },
+  android_apk: { first: 'inspect_android_package', arg: 'path', then: ['decode_android_resources', 'inspect_apk_signature', 'search_android_classes', 'inspect_android_class', 'trace_android_references'], fallback: { first: 'open_binary', arg: 'path', then: ['inspect_artifact', 'extract_artifact'] } },
   package_archive: { first: 'open_binary', arg: 'path', then: ['inspect_artifact', 'extract_artifact'] },
-  firmware_image: { first: 'inspect_firmware_regions', arg: 'path', then: ['extract_firmware', 'open_binary'] },
+  firmware_image: { first: 'inspect_firmware_regions', arg: 'path', then: ['extract_firmware', 'inspect_devicetree', 'open_binary'] },
   packet_capture: {
     first: 'inspect_pcap_capture',
     arg: 'path',
@@ -112,6 +117,15 @@ export const FIRST_TOOL_BY_TARGET = Object.freeze({
   wasm_module: { first: 'inspect_wasm_artifact', arg: 'path', then: ['inspect_analysis_view', 'compare_wasm_interfaces'] },
   sqlite_database: { first: 'inspect_sqlite_database', arg: 'path', then: [] },
   flutter_app: { first: 'identify_flutter_build', arg: 'path', then: ['inspect_dart_aot', 'inspect_android_package'] },
+  // Artifact kinds rea-agents 6.8.0 reads with a format-aware tool.
+  crash_report: { first: 'inspect_apple_ips', arg: 'path', then: ['open_binary'] },
+  kernel_module: { first: 'inspect_kernel_module', arg: 'path', then: ['inspect_elf_notes', 'open_binary'] },
+  beam_module: { first: 'inspect_erlang_beam', arg: 'path', then: [] },
+  python_bytecode: { first: 'inspect_python_pyc', arg: 'path', then: [] },
+  model_artifact: { first: 'inspect_model_artifact', arg: 'path', then: ['inspect_byte_entropy'] },
+  il2cpp_metadata: { first: 'inspect_il2cpp_metadata', arg: 'path', then: ['open_binary'] },
+  gpu_code_object: { first: 'inspect_gpu_code_objects', arg: 'path', then: [] },
+  desktop_application: { first: 'inspect_desktop_application', arg: 'path', then: ['open_binary', 'inspect_managed_artifact', 'inspect_il2cpp_metadata', 'analyze_javascript_application'] },
   website_in_browser: { first: 'list_browser_targets', arg: 'cdp_endpoint', then: ['inspect_web_page', 'analyze_web_bundle', 'observe_web_session'] },
   electron_or_node_runtime: { first: 'list_electron_targets', arg: 'cdp_endpoint', alt: 'list_javascript_runtime_targets', then: ['inspect_electron_page', 'observe_javascript_runtime'] },
   source_repository: { first: null, note: 'ordinary source code; REA is not needed' },
