@@ -82,7 +82,7 @@ In `advise` and `shadow` the hook never blocks; the user sees a `systemMessage` 
 
 ## 5. Session start — `SessionStart`
 
-No Jev call. One line of context: `rea-jev <version> · mode advise · Jev key: present (typesafe) · REA pinned 6.5.0 · /rea-jev:setup for diagnostics`. If it says the key is missing, the other hooks will stay silent (fail-open); the CLI `jev doctor` explains the fix.
+No Jev call. One line of context: `rea-jev <version> · mode advise · Jev key: present (typesafe) · REA pinned 6.8.0 · /rea-jev:setup for diagnostics`. If it says the key is missing, the other hooks will stay silent (fail-open); the CLI `jev doctor` explains the fix.
 
 ## Reading the numbers
 

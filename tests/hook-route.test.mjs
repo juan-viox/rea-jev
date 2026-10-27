@@ -118,8 +118,11 @@ describe('route block', () => {
     assert.deepEqual(Object.keys(body.questions).sort(), [...ROUTE_KEYS].sort());
     assert.equal(body.questions.is_re_task.type, 'noul');
     assert.equal(body.questions.target_kind.type, 'choice');
-    assert.equal(Object.keys(body.questions.target_kind.criteria).length, 14);
-    for (const k of ['firmware_image', 'packet_capture', 'wasm_module', 'sqlite_database', 'flutter_app']) assert.ok(k in body.questions.target_kind.criteria, k);
+    assert.equal(Object.keys(body.questions.target_kind.criteria).length, 22);
+    for (const k of [
+      'firmware_image', 'packet_capture', 'wasm_module', 'sqlite_database', 'flutter_app',
+      'crash_report', 'kernel_module', 'beam_module', 'python_bytecode', 'model_artifact', 'il2cpp_metadata', 'gpu_code_object', 'desktop_application',
+    ]) assert.ok(k in body.questions.target_kind.criteria, k);
     assert.equal(body.questions.workflow.type, 'choice');
     assert.equal(Object.keys(body.questions.workflow.criteria).length, 9);
     assert.equal(body.questions.scope.type, 'score');
@@ -375,6 +378,59 @@ describe('follow-up bar', () => {
   });
 });
 
+describe('format-aware kinds (rea-agents 6.8.0)', () => {
+  let kinds;
+  before(() => {
+    kinds = path.join(tmp, 'kinds680');
+    fs.mkdirSync(path.join(kinds, 'Game', 'Game_Data'), { recursive: true });
+    fs.writeFileSync(path.join(kinds, 'crash.ips'), '{"app_name":"Notes","timestamp":"2026-10-20 10:00:00.00 -0400","app_version":"4.11","bug_type":"309"}\n{"uptime":100}');
+    const ko = Buffer.alloc(64, 0);
+    ko.write('\x7fELF', 0, 'latin1');
+    ko[4] = 2;
+    ko[5] = 1;
+    ko[6] = 1;
+    ko.writeUInt16LE(1, 16);
+    fs.writeFileSync(path.join(kinds, 'nf_tables.ko'), ko);
+    fs.writeFileSync(path.join(kinds, 'router.beam'), Buffer.concat([Buffer.from('FOR1', 'latin1'), Buffer.from([0, 0, 0, 40]), Buffer.from('BEAM', 'latin1'), Buffer.alloc(40)]));
+    const pyc = Buffer.alloc(32);
+    pyc.writeUInt16LE(3571, 0);
+    pyc.write('\r\n', 2, 'latin1');
+    fs.writeFileSync(path.join(kinds, 'settings.pyc'), pyc);
+    fs.writeFileSync(path.join(kinds, 'llama.gguf'), Buffer.concat([Buffer.from('GGUF', 'latin1'), Buffer.from([3, 0, 0, 0]), Buffer.alloc(56)]));
+    fs.writeFileSync(path.join(kinds, 'global-metadata.dat'), Buffer.concat([Buffer.from('af1bb1fa', 'hex'), Buffer.from([24, 0, 0, 0]), Buffer.alloc(56)]));
+    fs.writeFileSync(path.join(kinds, 'kernel.fatbin'), Buffer.concat([Buffer.from('50ed55ba', 'hex'), Buffer.from([1, 0, 0, 0]), Buffer.alloc(56)]));
+  });
+  const cases = [
+    { file: 'crash.ips', kind: 'crash_report', hint: 'is an Apple .ips crash report (JSON)', first: /inspect_apple_ips\(path\), then open_binary/ },
+    { file: 'nf_tables.ko', kind: 'kernel_module', hint: 'is a relocatable ELF object (ET_REL; a kernel module when named .ko)', first: /inspect_kernel_module\(path\), then inspect_elf_notes \/ open_binary/ },
+    { file: 'router.beam', kind: 'beam_module', hint: 'is an Erlang BEAM bytecode module', first: /inspect_erlang_beam\(path\)$/m },
+    { file: 'settings.pyc', kind: 'python_bytecode', hint: 'is a CPython .pyc bytecode file', first: /inspect_python_pyc\(path\)$/m },
+    { file: 'llama.gguf', kind: 'model_artifact', hint: 'is a GGUF model file', first: /inspect_model_artifact\(path\), then inspect_byte_entropy/ },
+    { file: 'global-metadata.dat', kind: 'il2cpp_metadata', hint: 'is a Unity IL2CPP global-metadata file', first: /inspect_il2cpp_metadata\(path\), then open_binary/ },
+    { file: 'kernel.fatbin', kind: 'gpu_code_object', hint: 'is a CUDA fat binary (GPU code objects)', first: /inspect_gpu_code_objects\(path\)$/m },
+    { file: 'Game', kind: 'desktop_application', hint: 'is an installed desktop application directory', first: /inspect_desktop_application\(path\), then open_binary \/ inspect_managed_artifact \/ inspect_il2cpp_metadata \/ analyze_javascript_application/ },
+  ];
+  for (const c of cases) {
+    test(`${c.kind} (${c.file}): the sniff hint reaches Jev and the route block names the format-aware first tool`, async () => {
+      const before = fake.requests.length;
+      const session = newSession('route');
+      script({ is_re_task: 0.9, target_kind: c.kind });
+      const target = path.join(kinds, c.file);
+      const r = await runHook('hook-route', rePrompt(session, { cwd: kinds, prompt: `What does ${target} contain? Reverse engineer it.` }), env());
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(fake.requests.length, before + 1, 'exactly one Jev call');
+      const hints = fake.requests[before].body.state.sniff_hints;
+      assert.ok(hints.some((h) => h.startsWith(`path ${target} `) && h.includes(c.hint)), hints.join('|'));
+      const text = context(r);
+      assert.match(text, new RegExp(`^target: ${c.kind} \\(0\\.90\\) → first tool: `, 'm'));
+      assert.match(text, c.first);
+      assert.ok(text.split('\n').length <= 12);
+      const events = ledgerEvents(tmp, session);
+      assert.equal(events.at(-1).declared_target, target);
+    });
+  }
+});
+
 describe('format-aware kinds (rea-agents 6.5.0)', () => {
   // Fixtures are built at runtime in the temp dir; nothing binary is committed.
   let kinds;
@@ -400,7 +456,7 @@ describe('format-aware kinds (rea-agents 6.5.0)', () => {
     { file: 'login.har', kind: 'packet_capture', hint: 'is a HAR web-traffic recording', first: /inspect_web_network_capture\(capture_path, format\), then export_web_scripts \/ analyze_javascript_application/ },
     { file: 'engine.wasm', kind: 'wasm_module', hint: 'is a WebAssembly module', first: /inspect_wasm_artifact\(path\), then inspect_analysis_view \/ compare_wasm_interfaces/ },
     { file: 'cache.sqlite', kind: 'sqlite_database', hint: 'is a SQLite 3 database', first: /inspect_sqlite_database\(path\)$/m },
-    { file: 'router.bin', kind: 'firmware_image', hint: 'is a U-Boot uImage firmware image', first: /inspect_firmware_regions\(path\), then extract_firmware \/ open_binary/ },
+    { file: 'router.bin', kind: 'firmware_image', hint: 'is a U-Boot uImage firmware image', first: /inspect_firmware_regions\(path\), then extract_firmware \/ inspect_devicetree \/ open_binary/ },
     { file: 'shop.apk', kind: 'flutter_app', hint: 'is an Android package built with Flutter', first: /identify_flutter_build\(path\), then inspect_dart_aot \/ inspect_android_package/ },
   ];
   for (const c of cases) {

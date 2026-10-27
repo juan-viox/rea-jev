@@ -1,6 +1,6 @@
-# REA tool catalog (rea-agents 6.5.0)
+# REA tool catalog (rea-agents 6.8.0)
 
-Generated from rea-agents 6.5.0 (207 tools). Source: `data/rea-tool-catalog.json`. Do not edit by hand; regenerate with `node scripts/validate.mjs --write-catalog` after bumping the pin.
+Generated from rea-agents 6.8.0 (229 tools). Source: `data/rea-tool-catalog.json`. Do not edit by hand; regenerate with `node scripts/validate.mjs --write-catalog` after bumping the pin.
 
 Tool names are bare. In Claude Code they appear as `mcp__rea__<tool>` (REA registered globally by `rea setup`) or `mcp__plugin_rea-jev_rea__<tool>` (REA bundled by this plugin). Required inputs are the schema's `required` list; optional inputs are in the JSON catalog.
 
@@ -9,11 +9,42 @@ Tool names are bare. In Claude Code they appear as `mcp__rea__<tool>` (REA regis
 | Class | Rule | Gate behavior |
 |---|---|---|
 | `runtime` (24) | the debugger, instrumentation and device-control tools (`start_frida_session`, `instrument_with_frida`, `load_frida_script`, `resume_frida_session`, `start_gdb_session`, `gdb_console`, `start_rizin_debug_session`, `rizin_debug_command`, `execute_rizin_command`, `cutter_command`, `install_adb_package`, `uninstall_adb_package`, `push_adb_file`, `start_adb_app`, `start_adb_activity`, `stop_adb_app`); a `capture_*` or `observe_*` tool that launches a process, mutates the target or executes foreign code; any tool whose effects say `executesForeignCode` or `mutatesDevice` | local hard rules, then a Jev scope/risk check; may `ask` or `deny` |
-| `mutation` (26) | `set_*`, `annotate_*`, `import_*`, `export_*`, `open_*`, `close_*`, `unset_bookmark`, `record_unknown`, `update_unknown`, `extract_artifact`, `extract_firmware`, `recover_javascript_sources`, `pull_adb_file`, `pull_adb_package`, `collect_adb_bugreport`, `unload_frida_script` | never deduplicated; resets the redundancy window |
+| `mutation` (30) | `set_*`, `annotate_*`, `import_*`, `export_*`, `open_*`, `close_*`, `unset_bookmark`, `record_unknown`, `update_unknown`, `extract_artifact`, `extract_firmware`, `recover_javascript_sources`, `decompile_all`, `pull_adb_file`, `pull_adb_package`, `collect_adb_bugreport`, `unload_frida_script`, `update_analysis_settings` | never deduplicated; resets the redundancy window |
 | `status` (16) | `binary_session`, `list_unknowns`, `get_navigation_context`, `current_*`, `*_session_status`, `get_evidence_bundle`, `verify_unknown_resolution`, `list_documents`, `list_cutter_sessions`, `list_frida_devices`, `list_frida_processes`, `list_adb_devices` | never deduplicated, never sent to Jev |
-| `inspect` (141) | everything else | an identical repeated call (same tool + same input) is denied until a mutation happens; results are scored by the evidence hook |
+| `inspect` (159) | everything else | an identical repeated call (same tool + same input) is denied until a mutation happens; results are scored by the evidence hook |
 
-Contents: [official-proxy](#official-proxy-41-tools) · [enhanced](#enhanced-14-tools) · [native-provider](#native-provider-32-tools) · [application](#application-20-tools) · [artifact-provider](#artifact-provider-16-tools) · [managed-provider](#managed-provider-3-tools) · [android-provider](#android-provider-5-tools) · [apktool-provider](#apktool-provider-2-tools) · [pcap-provider](#pcap-provider-2-tools) · [flutter-provider](#flutter-provider-2-tools) · [jeb-provider](#jeb-provider-4-tools) · [adb-provider](#adb-provider-24-tools) · [firmware-provider](#firmware-provider-2-tools) · [browser-provider](#browser-provider-12-tools) · [electron-provider](#electron-provider-5-tools) · [runtime-provider](#runtime-provider-2-tools) · [session](#session-21-tools)
+Contents: [application](#application-24-tools) · [official-proxy](#official-proxy-41-tools) · [enhanced](#enhanced-15-tools) · [native-provider](#native-provider-41-tools) · [artifact-provider](#artifact-provider-23-tools) · [managed-provider](#managed-provider-3-tools) · [android-provider](#android-provider-5-tools) · [apktool-provider](#apktool-provider-2-tools) · [pcap-provider](#pcap-provider-2-tools) · [flutter-provider](#flutter-provider-2-tools) · [jeb-provider](#jeb-provider-4-tools) · [adb-provider](#adb-provider-24-tools) · [firmware-provider](#firmware-provider-2-tools) · [browser-provider](#browser-provider-11-tools) · [electron-provider](#electron-provider-5-tools) · [runtime-provider](#runtime-provider-2-tools) · [session](#session-23-tools)
+
+## application (24 tools)
+
+Application workflows — managed and JavaScript graphs, reconstruction.
+
+| Tool | Description | Required inputs | Effect |
+|---|---|---|---|
+| `inspect_analysis_settings` | Inspect REA's editable runtime admission sizes, deadlines and worker heaps, their bounds, launch values and application points. | — | inspect |
+| `update_analysis_settings` | When REA names an adjustable limit, atomically set or reset its runtime default, then retry once work and cleanup have settled. | `changes` | mutation |
+| `inspect_analysis_view` | Use javascript-routes collections to query route patterns, source-linked occurrences, source status, unknowns or summary counts… | `source`, `view` | inspect |
+| `compare_wasm_interfaces` | Compare typed core WASM import/export names, kinds and exact signatures from two authenticated inspect_wasm_artifact Evidence records. | `left`, `right`, `scope` | inspect |
+| `compare_managed_members` | Compare two authenticated inspect_managed_members Evidence records using unique-only tiers: exact declared type, name, and CIL/signature… | `left`, `right` | inspect |
+| `verify_managed_native_boundaries` | Verify managed P/Invoke/native-boundary declarations against authenticated native export or function Evidence without executing managed… | `managed_boundaries`, `native_observations` | inspect |
+| `import_managed_reconstruction` | Import decompiler-produced managed reconstruction against authenticated inspect_managed_members Evidence. | `static_members`, `decompiler`, `methods` | mutation |
+| `project_managed_application_graph` | Project authenticated managed artifact, member, and native-boundary Evidence into the provider-neutral application graph without executing… | — | inspect |
+| `trace_application_feature` | Trace a typed literal seed through every reachable part of an authenticated JavaScript Application Graph supplied as inline Evidence… | `seed`, `application` | inspect |
+| `trace_javascript_semantics` | Trace static JavaScript data-flow, direct call/return, and closure relations from inline application Evidence or an exact same-session… | `application`, `query` | inspect |
+| `compare_application_versions` | Compare two authenticated JavaScript Application Graph versions supplied as inline Evidence or exact same-session retained references. | `left`, `right` | inspect |
+| `compare_source_to_bundle` | Compare a cryptographically committed HistoricalSourceGraph supplied inline or as reference {kind:file,path:absolute-local-JSON-path}… | `reference`, `application` | inspect |
+| `compare_javascript_export_shapes` | Compare static return shapes for one exact module/export selector on each authenticated JavaScript Application Graph supplied as inline… | `left_module_path`, `left_export_name`, `right_module_path`, `right_export_name`, `left`, `right` | inspect |
+| `build_reconstruction_obligation_ledger` | Generate the complete deterministic ReconstructionObligationLedger from an authenticated Evidence bundle, reviewed obligations,… | `evidence_bundle`, `reviewed_obligations`, `manifest` | inspect |
+| `evaluate_reconstruction_coverage` | Evaluate inline evidence-backed reconstruction coverage against one named boundary. | `coverage`, `boundary_id` | inspect |
+| `project_android_application_graph` | Project authenticated APK inventory_artifact Evidence into an execution-free Android application inventory. | `inventory_evidence` | inspect |
+| `project_apple_application_graph` | Project authenticated IPA, macOS .app directory, ZIP, or DMG inventory Evidence into an execution-free Apple application inventory. | `inventory_evidence` | inspect |
+| `project_harmony_application_graph` | Project authenticated HarmonyOS HAP, HSP, or App Pack inventory Evidence into an execution-free application inventory. | `inventory_evidence` | inspect |
+| `trace_web_source_location` | Trace one generated position in an exported website script through an explicitly paired local source map. | `manifest_path`, `script_index`, `source_map`, `generated_position` | inspect |
+| `trace_web_module_imports` | Trace one exported website script's outgoing native ES imports/re-exports, using exact URL and optional selected import-map context. | `manifest_path`, `script_index` | inspect |
+| `export_web_scripts` | Export JavaScript bytes already retained in one local inspect_web_page or capture_browser_scenario JSON capture (normalized result… | `capture_path`, `output_directory` | mutation |
+| `inspect_web_network_capture` | Explicit record_ordinals also decode retained protobuf/gRPC bodies whose declared content type is recognized. | `capture_path`, `format` | inspect |
+| `export_environment_bundle` | Write an agent environment bundle folder from capture Evidence (capture_browser_scenario, or HAR inspect_web_network_capture Evidence)… | `source`, `output_directory` | mutation |
+| `recover_javascript_sources` | Recover readable modules from local UTF-8 JavaScript scripts/bundles into an absent directory, using caller-supplied Wakaru ^1.13.0… | `path`, `output_directory` | mutation |
 
 ## official-proxy (41 tools)
 
@@ -38,7 +69,7 @@ Official proxy — Hopper/Ghidra provider primitives.
 | `list_names` | List every analyzed memory and external symbol as address/value pairs. | — | inspect |
 | `list_procedures` | List every analyzed procedure as address/value pairs after provider analysis. | — | inspect |
 | `list_segments` | List segments or memory blocks using exclusive end addresses. | — | inspect |
-| `list_strings` | List every provider-defined string object, or filter to one address, as address/value pairs with encoding, terminator status, and byte… | — | inspect |
+| `list_strings` | List every provider-reported string object or candidate, or filter to one address, as address/value pairs with encoding, terminator… | — | inspect |
 | `next_address` | Return the next analyzed object address after an explicit address or current cursor. | — | inspect |
 | `prev_address` | Return the previous analyzed object start before an explicit address or current cursor. | — | inspect |
 | `procedure_address` | Resolve an unambiguous procedure symbol name or provider-normalized address to its canonical entry address. | `procedure` | inspect |
@@ -54,25 +85,26 @@ Official proxy — Hopper/Ghidra provider primitives.
 | `procedure_pseudo_code` | Decompile one analyzed procedure by symbol name or provider-normalized address. | `procedure` | inspect |
 | `resolve_containing_procedure` | Resolve an arbitrary address, including an interior instruction or exact external entry, to its provider-analyzed containing procedure. | `address` | inspect |
 | `search_procedures` | Search every analyzed procedure name using literal matching by default or regex when requested. | `pattern` | inspect |
-| `search_strings` | Search every provider-defined string object using literal matching by default or regex when requested. | `pattern` | inspect |
+| `search_strings` | Search every provider-reported string object or candidate using literal matching by default or regex when requested. | `pattern` | inspect |
 | `set_address_name` | Assign an analyst name to one mapped hexadecimal address and report whether the native edit succeeded and exact readback matched. | `address`, `name` | mutation |
 | `set_addresses_names` | Assign analyst names to multiple mapped addresses in one call and return per-address edit/readback success booleans. | `names` | mutation |
-| `set_bookmark` | Create or replace a bookmark at a mapped hexadecimal address and report success. | `address` | mutation |
+| `set_bookmark` | Create or update a bookmark at a mapped hexadecimal address and report readback success. | `address` | mutation |
 | `set_comment` | Write a regular analysis comment at a hexadecimal address and return whether readback matched. | `address`, `comment` | mutation |
 | `set_inline_comment` | Write an inline instruction comment at a hexadecimal address and return whether readback matched. | `address`, `comment` | mutation |
 | `unset_bookmark` | Remove the bookmark at a mapped hexadecimal address and return whether it is absent. | `address` | mutation |
 | `xrefs` | Return analyzed references to a code or data address. | — | inspect |
 
-## enhanced (14 tools)
+## enhanced (15 tools)
 
 Enhanced — composed native analysis.
 
 | Tool | Description | Required inputs | Effect |
 |---|---|---|---|
 | `inspect_native_dispatch_metadata` | Inspect the bound provider's name inventory for Objective-C class/method symbols and Swift mangled symbols, returning at most max_records… | — | inspect |
-| `get_objc_classes` | Discover and deduplicate Objective-C class labels, optionally filtering by literal substring. | — | inspect |
+| `get_objc_classes` | Discover Objective-C class labels, optionally filtering by literal substring. | — | inspect |
 | `get_objc_protocols` | Discover and deduplicate Objective-C and Swift protocol labels. | — | inspect |
-| `batch_decompile` | Decompile each explicit procedure symbol or address concurrently. | — | inspect |
+| `batch_decompile` | Decompile each explicit procedure symbol or address, with one provider read active per batch. | — | inspect |
+| `decompile_all` | Write provider pseudocode for every analyzed function, or a filtered subset, into a caller-selected directory and return only a manifest. | `output_directory` | mutation |
 | `get_call_graph` | Resolve one symbol or address to its canonical procedure entry, then traverse the bound provider's caller or callee relationships until… | `address` | inspect |
 | `analyze_swift_types` | Categorize analyzed Swift procedure names using their manglings or same-address Swift symbol aliases. | — | inspect |
 | `find_xrefs_to_name` | Resolve an exact name against the bound provider's name inventory and return a resolved or unresolved result. | `name` | inspect |
@@ -84,7 +116,7 @@ Enhanced — composed native analysis.
 | `trace_native_ui_action` | Trace one unique compiled UI action, object ID, native symbol or exact function address through authored connections, encoded… | `action` | inspect |
 | `trace_native_values` | Trace a bounded static dependency graph from one explicit native procedure. | `procedure` | inspect |
 
-## native-provider (32 tools)
+## native-provider (41 tools)
 
 Native provider — Mach-O metadata and native UI.
 
@@ -94,11 +126,20 @@ Native provider — Mach-O metadata and native UI.
 | `capture_native_ui_scenario` | Run selected-element press, increment/decrement scroll, AXValue text entry and bounded wait steps in one exact native app window. | `pid`, `window_id`, `steps` | runtime |
 | `observe_native_calls` | Launch the active Mach-O as an owned process under LLDB and record each entry into caller-selected functions or Objective-C methods… | `breakpoints` | runtime |
 | `inspect_macho` | Inspect Mach-O slices, load commands, imports, exports, dependencies, build metadata, segments, sections, permissions, and exact command… | — | inspect |
-| `inspect_signature` | Inspect the active Mach-O executable's code-signing identity, hashes, authorities, requirements, entitlements, hardened-runtime state,… | — | inspect |
-| `inspect_plist` | Parse Info.plist from the active artifact by default, or pass any local plist path. | — | inspect |
+| `inspect_signature` | Inspect the selected Mach-O architecture's code-signing identity, hashes, authorities, designated requirement, entitlements… | — | inspect |
+| `inspect_plist` | Requires an open binary or bundle-resource session; use open_binary or open_bundle_resources first. | — | inspect |
 | `list_architectures` | List thin or universal Mach-O slices with offsets, sizes, alignment, explicit coverage, and native-tool provenance. | — | inspect |
 | `demangle_swift` | Demangle an ordered list of single-line Swift symbols without requiring Hopper. | `symbols` | inspect |
+| `inspect_devicetree` | Inspect an explicit local flattened devicetree blob (FDT v16/v17) without execution or external tools. | `path` | inspect |
+| `inspect_pe_load_config` | Inspect PE32/PE32+ TLS callbacks and sized load configuration without executing the image. | `path` | inspect |
+| `inspect_elf_notes` | Inspect one explicit local ELF32/ELF64 image's PT_NOTE program headers and SHT_NOTE sections without executing it or opening a disassembler. | `path` | inspect |
+| `inspect_apple_ips` | Inspect one explicit local Apple .ips crash report without executing a target, launching atos, or opening a disassembler. | `path` | inspect |
+| `inspect_kernel_module` | Inspect one explicit local ELF32/ELF64 ET_REL Linux kernel module without executing it or opening a disassembler. | `path` | inspect |
+| `inspect_byte_entropy` | Inspect Shannon byte entropy for one explicit local file offline, without execution, extraction or external tools. | `path` | inspect |
+| `inspect_pe_certificates` | Inspect one explicit local PE32/PE32+ image's IMAGE_DIRECTORY_ENTRY_SECURITY table without executing it, verifying signatures or opening… | `path` | inspect |
+| `inspect_pe_imports` | Inspect one explicit local PE32/PE32+ image's IMAGE_DIRECTORY_ENTRY_IMPORT and delay-load tables without executing it or opening… | `path` | inspect |
 | `inspect_pe_resources` | Inspect one explicit local PE32/PE32+ image's complete bounded type/name/language resource tree without executing it or opening… | `path` | inspect |
+| `inspect_native_exports` | Inspect one explicit local PE or ELF image's export table without executing it or opening an engine: PE export-directory names, ordinals… | `path` | inspect |
 | `inspect_binary_layout` | Inspect an explicit local binary without launching it as a host process. | `path` | inspect |
 | `inspect_recorded_crash` | Inspect a supplied Linux ELF64 amd64 or AArch64 little-endian core without launching its target or attaching to any live PID. | `path` | inspect |
 | `list_cutter_sessions` | List live REA bridge sessions hosted by upstream Cutter instances, including observed document identity and bridge-directory security… | — | status |
@@ -119,53 +160,33 @@ Native provider — Mach-O metadata and native UI.
 | `load_frida_script` | Load caller-supplied JavaScript into a Frida session. | `session_id`, `source_kind` | runtime |
 | `resume_frida_session` | Resume the process created by a paused Frida spawn session. | `session_id` | runtime |
 | `unload_frida_script` | Unload one caller-selected Frida script from a live session. | `session_id`, `script_id` | mutation |
-| `frida_session_status` | Return observed Frida session state and queued script messages. | `session_id` | status |
-| `close_frida_session` | Unload session scripts and detach REA's Frida session. | `session_id` | mutation |
+| `frida_session_status` | Read observed Frida session state on each call. | `session_id` | status |
+| `close_frida_session` | Unload session scripts and attempt to detach REA's Frida session. | `session_id` | mutation |
 | `instrument_with_frida` | Run one caller-authored Frida script against an explicitly selected process and detach when the observation window ends. | `mode`, `source_kind` | runtime |
 
-## application (20 tools)
-
-Application workflows — managed and JavaScript graphs, reconstruction.
-
-| Tool | Description | Required inputs | Effect |
-|---|---|---|---|
-| `inspect_analysis_view` | Inspect selected views of completed binary-layout, JavaScript application, native analyze_function, inspect_artifact, inventory_artifact… | `source`, `view` | inspect |
-| `compare_wasm_interfaces` | Compare typed core WASM import/export names, kinds and exact signatures from two authenticated inspect_wasm_artifact Evidence records. | `left`, `right`, `scope` | inspect |
-| `compare_managed_members` | Compare two authenticated inspect_managed_members Evidence records using unique-only tiers: exact declared type, name, and CIL/signature… | `left`, `right` | inspect |
-| `verify_managed_native_boundaries` | Verify managed P/Invoke/native-boundary declarations against authenticated native export or function Evidence without executing managed… | `managed_boundaries`, `native_observations` | inspect |
-| `import_managed_reconstruction` | Import decompiler-produced managed reconstruction against authenticated inspect_managed_members Evidence. | `static_members`, `decompiler`, `methods` | mutation |
-| `project_managed_application_graph` | Project authenticated managed artifact, member, and native-boundary Evidence into the provider-neutral application graph without executing… | — | inspect |
-| `trace_application_feature` | Trace a typed literal seed through every reachable part of an authenticated JavaScript Application Graph supplied as inline Evidence… | `seed`, `application` | inspect |
-| `trace_javascript_semantics` | Trace static JavaScript data-flow, direct call/return, and closure relations from inline application Evidence or an exact same-session… | `application`, `query` | inspect |
-| `compare_application_versions` | Compare two authenticated JavaScript Application Graph versions supplied as inline Evidence or exact same-session retained references. | `left`, `right` | inspect |
-| `compare_source_to_bundle` | Compare a cryptographically committed HistoricalSourceGraph with authenticated JavaScript Application Graph Evidence supplied inline… | `reference`, `application` | inspect |
-| `compare_javascript_export_shapes` | Compare static return shapes for one exact module/export selector on each authenticated JavaScript Application Graph supplied as inline… | `left_module_path`, `left_export_name`, `right_module_path`, `right_export_name`, `left`, `right` | inspect |
-| `build_reconstruction_obligation_ledger` | Generate the complete deterministic ReconstructionObligationLedger from an authenticated Evidence bundle, reviewed obligations,… | `evidence_bundle`, `reviewed_obligations`, `manifest` | inspect |
-| `evaluate_reconstruction_coverage` | Evaluate inline evidence-backed reconstruction coverage against one named boundary. | `coverage`, `boundary_id` | inspect |
-| `project_android_application_graph` | Project authenticated APK inventory_artifact Evidence into an execution-free Android application inventory. | `inventory_evidence` | inspect |
-| `project_apple_application_graph` | Project authenticated IPA, macOS .app directory, ZIP, or DMG inventory Evidence into an execution-free Apple application inventory. | `inventory_evidence` | inspect |
-| `project_harmony_application_graph` | Project authenticated HarmonyOS HAP, HSP, or App Pack inventory Evidence into an execution-free application inventory. | `inventory_evidence` | inspect |
-| `trace_web_source_location` | Trace one generated position in an exported website script through an explicitly paired local source map. | `manifest_path`, `script_index`, `source_map`, `generated_position` | inspect |
-| `trace_web_module_imports` | Trace one exported website script's outgoing native ES imports/re-exports, using exact URL and optional selected import-map context. | `manifest_path`, `script_index` | inspect |
-| `export_web_scripts` | Export JavaScript bytes already retained in one local inspect_web_page or capture_browser_scenario JSON capture (normalized result… | `capture_path`, `output_directory` | mutation |
-| `recover_javascript_sources` | Recover readable modules from local UTF-8 JavaScript scripts/bundles into an absent directory, using caller-supplied Wakaru ^1.13.0… | `path`, `output_directory` | mutation |
-
-## artifact-provider (16 tools)
+## artifact-provider (23 tools)
 
 Artifact provider — packages, archives, bundles.
 
 | Tool | Description | Required inputs | Effect |
 |---|---|---|---|
-| `inspect_artifact` | Inspect an active archive or application package in one call. | — | inspect |
-| `extract_artifact` | Extract all regular files from the active archive or application package into a fresh temporary directory chosen by REA. | — | mutation |
+| `inspect_artifact` | Inspect an active archive or application package, including Node.js SEA carriers, in one call. | — | inspect |
+| `extract_artifact` | Extract regular files (including Node.js SEA scripts and assets) exposed by a supported active archive reader into a fresh temporary… | — | mutation |
 | `decode_interface_builder` | Decode compiled storyboard and nib archives inside the active Apple app bundle, including keyed property lists and NIBArchive object… | — | inspect |
 | `inspect_keyed_archive` | Inspect one Foundation NSKeyedArchiver plist in the active app bundle as original object-table nodes, class descriptors, named roots,… | — | inspect |
 | `inspect_asset_catalog` | Inspect compiled Assets.car metadata in an active Apple app bundle. | — | inspect |
 | `trace_dylib_resolution` | Trace how dyld would resolve each Mach-O dylib load for the active Mach-O, or for every executable in the active .app bundle (the main… | — | inspect |
+| `inspect_desktop_application` | Inspect a local desktop application directory using bounded listings, file headers and selected metadata. | `path` | inspect |
 | `inspect_evm_interface` | Inspect explicit local flat EVM bytecode without target execution or chain/RPC access. | `path`, `encoding` | inspect |
 | `inspect_go_binary` | Inspect embedded Go compiler version, main module, dependency/replacement versions and build settings in an explicit local ELF, PE or thin… | `path` | inspect |
-| `inspect_rust_binary` | Inspect the cargo-auditable crate dependency list embedded in an explicit local ELF, PE or thin Mach-O image. | `path` | inspect |
+| `inspect_il2cpp_metadata` | Inspect local Unity IL2CPP metadata (24/27/29/31/39), optionally linking a caller-selected 64-bit little-endian Mach-O, PE or ELF binary. | `path` | inspect |
+| `inspect_model_artifact` | Inspect local GGUF v2/v3 or safetensors declarations by content, without loading models or executing code. | `path` | inspect |
+| `inspect_gpu_code_objects` | Inspect static CUDA/HIP GPU code objects in local ELF/PE hosts, CUDA fatbins, CUBIN, PTX and Clang HIP bundles (CUDA LZ4/Zstd and CCOB… | `path` | inspect |
+| `inspect_rust_binary` | Inspect the cargo-auditable crate dependency list embedded in an explicit local ELF, PE or thin Mach-O image, or the slice of a universal… | `path` | inspect |
+| `inspect_python_pyc` | Inspect one explicit local CPython 3.7–3.13 .pyc file with a supported 16-byte header without executing bytecode, invoking CPython… | `path` | inspect |
+| `inspect_erlang_beam` | Inspect one explicit local Erlang BEAM IFF container without executing bytecode or installing Erlang. | `path` | inspect |
 | `inspect_wasm_artifact` | Validate an explicit local WASM artifact with caller-supplied WABT 1.0.42. | `path` | inspect |
+| `inspect_apk_signature` | Inspect declared v1/v2/v3/v3.1 APK signers, certificate fingerprints, algorithm IDs, content digests, SDK ranges, rotation lineage… | `path` | inspect |
 | `inspect_sqlite_database` | Inspect an explicit local SQLite database snapshot and its existing sibling WAL without modifying source files or opening a native… | `path` | inspect |
 | `inspect_packet_fields` | Discover protocols or field names/types registered in the installed TShark 4.x. | — | inspect |
 | `inspect_packet_capture` | Inspect caller-selected fields in an existing local packet capture with TShark 4.x. | `path`, `fields` | inspect |
@@ -189,8 +210,8 @@ Android provider — APK classes, members and references.
 
 | Tool | Description | Required inputs | Effect |
 |---|---|---|---|
-| `inspect_android_package` | Inspect a local APK's package, SDK and permission declarations, decoded manifest and class/resource counts. | `path` | inspect |
-| `search_android_classes` | Search complete decompiler class-name rows in an explicit local APK by case-sensitive substring. | `path`, `query` | inspect |
+| `inspect_android_package` | Inspect a local APK's package, SDK and permission declarations, decoded manifest and class/resource counts, with a bounded static… | `path` | inspect |
+| `search_android_classes` | Search complete top-level decompiler class-name rows in an explicit local APK by case-sensitive substring. | `path`, `query` | inspect |
 | `inspect_android_class` | Inspect one exact Android class's parsed methods, fields and inner classes, including synthetic members. | `path`, `class_name` | inspect |
 | `inspect_android_method` | Decompile one Android method with smali fallback. | `path`, `class_name`, `method_name` | inspect |
 | `trace_android_references` | Trace incoming static using nodes to an exact Android class or selected method overload. | `path`, `class_name` | inspect |
@@ -219,8 +240,8 @@ Flutter provider — build identification and Dart AOT snapshots.
 
 | Tool | Description | Required inputs | Effect |
 |---|---|---|---|
-| `identify_flutter_build` | Identify a Flutter app's build facts by pure parsing: the Dart VM snapshot hash from every lib/<abi>/libapp.so AOT section (vm… | `path` | inspect |
-| `inspect_dart_aot` | Inspect one ABI's Dart AOT snapshot inside an APK: the four snapshot symbols located through the ELF dynamic symbol table with their… | `path` | inspect |
+| `identify_flutter_build` | Identify a Flutter app's build facts by pure parsing: observed Dart snapshot hashes from lib/<abi>/libapp.so, per-ABI library digests,… | `path` | inspect |
+| `inspect_dart_aot` | Inspect one ABI's legacy split VM/isolate Dart AOT snapshot inside an APK (complete structural coverage: Dart 2.14 FullAOT kind 3). | `path` | inspect |
 
 ## jeb-provider (4 tools)
 
@@ -245,7 +266,7 @@ ADB provider — attached Android devices and emulators.
 | `list_adb_packages` | List installed packages on one device with each base APK's device path, optionally scoped to third-party or system packages. | `serial` | inspect |
 | `pull_adb_package` | Pull one installed package's complete APK set (base plus every split, as `pm path` reports) from the device into a caller-selected output… | `serial`, `package`, `output_directory` | mutation |
 | `read_adb_logcat` | Read a bounded dump of the device log (`logcat -d -t`) for one buffer, optionally restricted to a process id. | `serial` | inspect |
-| `inspect_adb_package` | Inspect one installed package through `dumpsys package`: version name/code, install and update times, installer, user id, flags,… | `serial`, `package` | inspect |
+| `inspect_adb_package` | Inspect installed-package versions, install times, installer, user id, flags, and requested-permission count through read-only `dumpsys… | `serial`, `package` | inspect |
 | `pull_adb_file` | Pull one absolute device path (a database, shared-preferences XML, or any readable file) into a caller-selected output directory… | `serial`, `device_path`, `output_directory` | mutation |
 | `push_adb_file` | Push one local file to an absolute device path. | `serial`, `local_path`, `device_path` | runtime |
 | `capture_adb_screen` | Capture one frame of the device screen as a PNG (`screencap -p` through exec-out, no device-side file) into a caller-selected output… | `serial`, `output_directory` | runtime |
@@ -253,13 +274,13 @@ ADB provider — attached Android devices and emulators.
 | `list_adb_directory` | List the immediate children of one absolute device directory, including hidden entries: names, kinds, permissions, owner, group, sizes… | `serial`, `device_path` | inspect |
 | `list_adb_features` | List the device's declared hardware and software features (`pm list features`) for device fingerprinting. | `serial` | inspect |
 | `list_adb_services` | List the device's binder services with their interfaces (`service list`). | `serial` | inspect |
-| `inspect_adb_display` | Report the display's physical and any overridden size (`wm size`) and density (`wm density`) as the device declares them. | `serial` | inspect |
-| `inspect_adb_window` | Report the window manager's current focus declarations (mCurrentFocus and mFocusedApp from `dumpsys window windows`, or from `dumpsys… | `serial` | inspect |
+| `inspect_adb_display` | Read physical and override size/density from `wm size` and `wm density`. | `serial` | inspect |
+| `inspect_adb_window` | Report the window manager's focus declarations with display context, original lines and explicit summary status. | `serial` | inspect |
 | `read_adb_setting` | Read one settings value (`settings get`) from the system, secure, or global namespace. | `serial`, `namespace`, `key` | inspect |
 | `collect_adb_bugreport` | Collect one device-generated bugreport archive (`adb bugreport`) into a caller-selected output directory, digesting the zip. | `serial`, `output_directory` | mutation |
 | `resolve_adb_packages` | Find installed packages by case-insensitive substring of the package name (e.g. | `serial`, `query` | inspect |
 | `install_adb_package` | Install one local APK on the device (`adb install [-r]`), recording the APK's host digest and byte size. | `serial`, `apk_path` | runtime |
-| `uninstall_adb_package` | Uninstall one package from the device (`adb uninstall`), removing its data for user 0. | `serial`, `package` | runtime |
+| `uninstall_adb_package` | Request package removal for user 0 (`adb shell pm uninstall --user 0`) without data retention. | `serial`, `package` | runtime |
 | `start_adb_app` | Start one installed app's resolved launcher activity with `am start -W -n`. | `serial`, `package` | runtime |
 | `start_adb_activity` | Start an intent with `am start -W`: one action, optional data URI, optional explicit component, and up to 16 typed extras (string… | `serial`, `action` | runtime |
 | `stop_adb_app` | Force-stop every process of one package (`am force-stop`), ending a dynamic-analysis run. | `serial`, `package` | runtime |
@@ -273,7 +294,7 @@ Firmware provider — image regions and extraction.
 | `inspect_firmware_regions` | Inspect signature candidates in a local firmware file with Binwalk 3.1.x (verified with 3.1.0). | `path` | inspect |
 | `extract_firmware` | Extract caller-selected firmware bytes with Unblob 26.6.x (verified with 26.6.4) into an absent output directory. | `path`, `output_directory` | mutation |
 
-## browser-provider (12 tools)
+## browser-provider (11 tools)
 
 Browser provider — Chrome DevTools Protocol.
 
@@ -290,7 +311,6 @@ Browser provider — Chrome DevTools Protocol.
 | `capture_browser_scenario` | Run a controlled browser scenario when passive observation cannot exercise the application. | `browser`, `start_url`, `actions` | runtime |
 | `observe_web_execution` | Instrument one selected CDP page for a finite, externally driven precise coverage window. | `cdp_endpoint`, `target_id` | runtime |
 | `inspect_web_event_listeners` | Inspect listeners registered directly on the first main-document CSS match in one selected CDP page. | `cdp_endpoint`, `target_id`, `selector` | inspect |
-| `inspect_web_network_capture` | Request detail summary for capture identity and counts; then page retained records with inspect_analysis_view kind capture (preview… | `capture_path`, `format` | inspect |
 
 ## electron-provider (5 tools)
 
@@ -313,23 +333,25 @@ Runtime provider — V8 Inspector.
 | `list_javascript_runtime_targets` | List every eligible Node/Electron V8 Inspector target from an explicit literal-loopback endpoint. | `inspector_endpoint` | inspect |
 | `observe_javascript_runtime` | Attach passively to one Node/Electron V8 Inspector target by supplying its loopback Inspector endpoint and target ID. | `inspector_endpoint`, `target_id` | inspect |
 
-## session (21 tools)
+## session (23 tools)
 
 Session — target lifecycle, Evidence, unknowns, comparisons.
 
 | Tool | Description | Required inputs | Effect |
 |---|---|---|---|
 | `open_binary` | Open a local executable, application bundle, archive, JavaScript, source map, plist, or analysis database after validation. | `path` | mutation |
-| `close_binary` | Drain earlier provider requests, optionally write a provider-neutral analysis snapshot atomically to the caller-supplied path, then close… | — | mutation |
-| `binary_session` | Report the complete current target, provider, capability availability, client-feature, analysis, and server-identity status… | — | status |
+| `open_bundle_resources` | Open a local app bundle for read-only plist, Interface Builder, asset catalog, and keyed archive inspection without resolving or inventing… | `path` | mutation |
+| `close_binary` | When the investigation is finished, drain earlier provider requests, optionally write a provider-neutral analysis snapshot atomically… | — | mutation |
+| `binary_session` | Report the active binary target or resource-only app root, provider and capability availability when applicable, client-feature, analysis… | — | status |
 | `export_evidence_bundle` | Atomically write the session's deterministic Evidence bundle to the requested local path. | `path` | mutation |
 | `import_evidence_bundle` | Read the JSON bundle at the supplied local path, validate every Evidence ID and canonical manifest, then atomically merge it. | `path` | mutation |
 | `capture_process_scenario` | Run one caller-selected command under a PTY and return process capture Evidence with residual unknowns. | `executable` | runtime |
 | `compare_process_captures` | Compare two compatible process capture observations across terminal, interaction, lifecycle, process, filesystem, command-shim, HTTP,… | `left`, `right` | inspect |
 | `compare_artifacts` | Compare complete artifact inventories by logical occurrence path, content identity, metadata, and graph relations. | `left`, `right` | inspect |
-| `compare_functions` | Compare two explicit sets of analyze_function Evidence across identity, exact provider text, calls, references, strings,… | `left`, `right` | inspect |
+| `match_native_functions` | Match two retained list_procedures inventories by unique exact reported symbols, then unique identical observed function bytes. | `left`, `right` | inspect |
+| `compare_functions` | Compare two explicit analyze_function Evidence records or exact retained session references across identity, exact provider text, calls… | `left`, `right` | inspect |
 | `compare_bundles` | Compare two canonical Evidence bundles by exact record membership, explicit one-to-one observation pairs, and complete residual-unknown… | `left_bundle_path`, `right_bundle_path` | inspect |
-| `find_changed_behavior` | Aggregate validated process and artifact comparison Evidence. | `comparisons` | inspect |
+| `find_changed_behavior` | Aggregate validated process, artifact, and function comparison Evidence. | `comparisons` | inspect |
 | `build_call_path` | Build every shortest direct-callee path inline from complete analyze_function Evidence records using exact canonical addresses. | `functions`, `start`, `goal` | inspect |
 | `correlate_static_and_runtime` | Evaluate every explicit caller-declared hypothesis between exact static comparison findings and runtime comparison dimensions. | `static_comparisons`, `runtime_comparisons`, `mappings` | inspect |
 | `verify_reconstruction` | Verify a finite typed behavioral and structural specification against a canonical Evidence bundle. | `specification` | inspect |
