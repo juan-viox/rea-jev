@@ -4,6 +4,91 @@ All notable changes to rea-jev are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-10-27
+
+The bundled REA moves from rea-agents 6.5.0 to 6.8.0 (6.6.0 and 6.7.0 were
+never published to npm as separate catalogs; 6.8.0 carries their changes).
+The catalog grows from 207 to 229 tools; no tool was removed or renamed, and
+no required input changed. The route hook names the eight artifact kinds
+6.8.0 reads with a format-aware tool.
+
+### Changed
+
+- `.mcp.json` pins `rea-agents@6.8.0`; `data/rea-tool-catalog.json`
+  regenerated with `scripts/import-rea-catalog.mjs` (229 tools, 22 added:
+  `decompile_all`, `export_environment_bundle`, `inspect_analysis_settings`,
+  `update_analysis_settings`, `inspect_apk_signature`, `inspect_apple_ips`,
+  `inspect_byte_entropy`, `inspect_desktop_application`, `inspect_devicetree`,
+  `inspect_elf_notes`, `inspect_erlang_beam`, `inspect_gpu_code_objects`,
+  `inspect_il2cpp_metadata`, `inspect_kernel_module`, `inspect_model_artifact`,
+  `inspect_native_exports`, `inspect_pe_certificates`, `inspect_pe_imports`,
+  `inspect_pe_load_config`, `inspect_python_pyc`, `match_native_functions`,
+  `open_bundle_resources`). Six existing tools changed effect flags
+  (`inspect_signature`, `analyze_web_bundle` and
+  `analyze_javascript_application` now report `writesFilesystem` and
+  `launchesProcess`; `close_frida_session` reports `executesForeignCode`;
+  `frida_session_status` `mutatesSession`; `inspect_web_network_capture`
+  moved to the `application` kind); none changes its effect class.
+- Effect classes: `decompile_all` (writes pseudocode into a caller-selected
+  directory) and `update_analysis_settings` (changes REA's runtime limits for
+  the session) are `mutation`; the new `inspect_*` readers,
+  `inspect_analysis_settings` and `match_native_functions` are `inspect` and
+  static. `scripts/validate.mjs` mirrors the two additions; `match_exists`
+  (a Jev question key in the recipes) joins the spec vocabulary now that
+  `match_` is a tool verb.
+- Gate: `decompile_all` and `export_environment_bundle` join the path-gated
+  tools, so an `output_directory` outside the working directory goes through
+  the Jev gate like `extract_firmware`.
+- Route: eight `target_kind` options (the Jev choice has twenty-two):
+  `crash_report` → `inspect_apple_ips(path)`; `kernel_module` →
+  `inspect_kernel_module(path)` then `inspect_elf_notes` / `open_binary`;
+  `beam_module` → `inspect_erlang_beam(path)`; `python_bytecode` →
+  `inspect_python_pyc(path)`; `model_artifact` → `inspect_model_artifact(path)`
+  then `inspect_byte_entropy`; `il2cpp_metadata` →
+  `inspect_il2cpp_metadata(path)` then `open_binary`; `gpu_code_object` →
+  `inspect_gpu_code_objects(path)`; `desktop_application` →
+  `inspect_desktop_application(path)` then `open_binary` /
+  `inspect_managed_artifact` / `inspect_il2cpp_metadata` /
+  `analyze_javascript_application`. `firmware_image` now lists
+  `inspect_devicetree` among its follow-ups and `android_apk` lists
+  `inspect_apk_signature`; `package_archive` names Godot `.pck`, PyInstaller
+  and Node.js SEA carriers (read by `inspect_artifact`).
+- Sniff (`scripts/lib/sniff.mjs`): an ELF whose `e_type` is `ET_REL` reads as
+  `elf_rel` (a `.ko` routes as `kernel_module`, any other relocatable object
+  stays `native_binary`); `FOR1`…`BEAM` → `beam`; a `.pyc` header → `pyc`;
+  `GGUF` → `gguf`; a little-endian u64 header length followed by `{` →
+  `safetensors`; `0xFAB11BAF` → `il2cpp_metadata`; `0xBA55ED50` →
+  `cuda_fatbin`; `GDPC` → `pck` (`package_archive`); a JSON head with
+  `"app_name"` or `"bug_type"`, or any JSON object on a `.ips`, → `ips`. A
+  directory with a top-level `.exe`, `UnityPlayer.dll`, a `.pck` or a
+  `*_Data` directory (one bounded listing, after the app-bundle, JavaScript
+  and Android checks) is a `desktop_application`. New path-token extensions
+  `.ips .ko .beam .pyc .gguf .safetensors .cubin .ptx .fatbin .pck`; new
+  keywords (crash report, kernel module, bytecode, gguf, safetensors, il2cpp,
+  cubin, fatbin, ptx).
+- Skill and docs: `analyze_function` returns a retained summary by default in
+  6.8.0 (`detail: "complete"` for the inline dossier; page through
+  `inspect_analysis_view`), noted in the skill, the investigator agent and the
+  route table; route-table rows and an extended "other targets" table for the
+  6.8.0 readers; `commands/investigate.md`, DESIGN.md, docs/decision-points.md
+  and the user guide list the new kinds; the user guide states the Node range
+  6.8.0 declares (`^22.23.4 || ^24.22.1 || >=26.12.1`; an older 22.x still
+  starts the server, `rea doctor` reports it as a missing dependency).
+
+### Tests
+
+- `tests/sniff.test.mjs`: the 6.8.0 magics and extensions, ET_REL in both
+  byte orders, the `.ips` head, the desktop-folder heuristic (an unpacked
+  Electron app stays a JavaScript application), the new keywords.
+- `tests/hook-route.test.mjs`: each of the eight kinds, with a fixture built
+  at runtime, reaches Jev with its hint and prints its first tool; the Jev
+  choice has twenty-two options.
+- `tests/rea-catalog.test.mjs`: pin 6.8.0, 229 tools, the new first tools,
+  every 6.8.0 reader inspect-class and static, `FIRST_TOOL_BY_TARGET` has
+  one entry per option; `tests/hook-gate.test.mjs`: `decompile_all` outside
+  cwd reaches Jev, inside it does not; `tests/cli.test.mjs`: doctor reports
+  the new pin and count.
+
 ## [0.3.0] - 2026-10-16
 
 The route hook now names the artifact kinds rea-agents 6.5.0 reads with a
@@ -311,3 +396,5 @@ Initial release.
 [0.1.3]: https://github.com/juan-viox/rea-jev/compare/v0.1.2...v0.1.3
 [0.1.4]: https://github.com/juan-viox/rea-jev/compare/v0.1.3...v0.1.4
 [0.2.0]: https://github.com/juan-viox/rea-jev/compare/v0.1.4...v0.2.0
+[0.3.0]: https://github.com/juan-viox/rea-jev/compare/v0.2.0...v0.3.0
+[0.4.0]: https://github.com/juan-viox/rea-jev/compare/v0.3.0...v0.4.0

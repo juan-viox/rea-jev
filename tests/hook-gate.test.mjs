@@ -379,6 +379,31 @@ describe('rule 4: Jev gate', () => {
     assert.equal(r.stdout, '');
     assert.equal(lastPre(session).source, 'jev');
   });
+  test('decompile_all with an output_directory outside cwd reaches Jev; inside cwd it does not (rea-agents 6.8.0)', async () => {
+    const before = fake.requests.length;
+    script({ within_scope: 0.9, irreversible: 0.1, runtime_requested: 0.5 });
+    const s1 = newSession('gate');
+    seedLedger(tmp, s1, [routeEvent]);
+    const outside = await runHook(
+      'hook-gate',
+      payload('pre-export-evidence-bundle.json', { session_id: s1, cwd: ROOT, tool_name: 'mcp__plugin_rea-jev_rea__decompile_all', tool_input: { output_directory: '/tmp/elsewhere/pseudocode' } }),
+      env(),
+    );
+    assert.equal(outside.stdout, '');
+    assert.equal(fake.requests.length, before + 1);
+    assert.equal(fake.requests[before].body.state.tool, 'decompile_all');
+    assert.equal(lastPre(s1).source, 'jev');
+    const s2 = newSession('gate');
+    seedLedger(tmp, s2, [routeEvent]);
+    const inside = await runHook(
+      'hook-gate',
+      payload('pre-export-evidence-bundle.json', { session_id: s2, cwd: ROOT, tool_name: 'mcp__plugin_rea-jev_rea__decompile_all', tool_input: { output_directory: './out/pseudocode' } }),
+      env(),
+    );
+    assert.equal(inside.stdout, '');
+    assert.equal(fake.requests.length, before + 1, 'no second Jev call');
+    assert.equal(lastPre(s2).source, 'local');
+  });
   test('export_evidence_bundle outside cwd reaches Jev; inside cwd it does not', async () => {
     const before = fake.requests.length;
     script({ within_scope: 0.9, irreversible: 0.1, runtime_requested: 0.5 });

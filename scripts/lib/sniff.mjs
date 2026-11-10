@@ -3,7 +3,8 @@
  * directory heuristics, URLs, CDP / inspector endpoints, and the RE keyword
  * pre-filter. Read-only, bounded (≤16 tokens, ≤64 bytes per file plus one PE
  * header read, and for a `.apk` one bounded read of the zip central directory
- * to tell a Flutter build from a plain package), and silent on every error.
+ * to tell a Flutter build from a plain package; for a directory one bounded
+ * listing to tell a desktop application folder), and silent on every error.
  *
  * @module sniff
  */
@@ -30,6 +31,8 @@ export const TARGET_EXTENSIONS = Object.freeze([
   'app', 'asar', 'apk', 'ipa', 'dmg', 'zip', 'exe', 'dll', 'dylib', 'so', 'hop', 'msix', 'appx', 'node',
   // Artifact kinds rea-agents 6.5.0 reads with a format-aware tool.
   'wasm', 'sqlite', 'sqlite3', 'db', 'db3', 'pcap', 'pcapng', 'har', 'saz', 'qlog', 'sqlog', 'mitm',
+  // Artifact kinds rea-agents 6.8.0 reads with a format-aware tool.
+  'ips', 'ko', 'beam', 'pyc', 'gguf', 'safetensors', 'cubin', 'ptx', 'fatbin', 'pck',
   ...FIRMWARE_EXTENSIONS,
 ]);
 
@@ -46,6 +49,7 @@ export const KEYWORD_RE = (() => {
     'port(?:ing)? .{0,40}feature', 'strings? (?:in|from) the', 'symbols?', 'obfuscat\\w*', 'minified', 'bundle', 'source ?map',
     'cdp', 'devtools', 'inspector',
     'firmware', 'pcap(?:ng)?', 'packet captures?', 'wasm', 'webassembly',
+    'crash reports?', 'kernel modules?', 'bytecode', 'gguf', 'safetensors', 'il2cpp', 'cubin', 'fatbin', 'ptx',
   ];
   return new RegExp(`(?<!\\w)(?:${words.join('|')})(?!\\w)|\\.(?:so|app|net)(?!\\w)`, 'i');
 })();
@@ -69,6 +73,13 @@ const TRAILING_PUNCT_RE = /[.,;:!?'"`)\]]+$/;
 const NO_MAGIC_PREFIXES = ['/dev/', '/proc/', '/sys/'];
 /** pcap file magics: µs and ns timestamps, both byte orders. */
 const PCAP_MAGICS = new Set(['a1b2c3d4', 'd4c3b2a1', 'a1b23c4d', '4d3cb2a1']);
+/** IL2CPP `global-metadata.dat` (`0xFAB11BAF` little-endian) and CUDA fat binary (`0xBA55ED50` little-endian) magics, as the first four bytes read as hex. */
+const IL2CPP_METADATA_HEX = 'af1bb1fa';
+const CUDA_FATBIN_HEX = '50ed55ba';
+/** A safetensors header (little-endian u64 byte length, then the JSON header) longer than this is not sniffed as one. */
+const SAFETENSORS_HEADER_MAX = 256 * 1024 * 1024;
+/** Most entries of a directory read to tell a desktop application folder. */
+const DIRECTORY_ENTRIES_MAX = 512;
 /** Magics `firmwareMagic()` returns; each maps to `firmware_image`. */
 const FIRMWARE_MAGICS = new Set(['uimage', 'squashfs', 'cramfs', 'jffs2', 'ubi', 'ubifs', 'trx', 'dtb', 'uf2', 'dfuse', 'android_boot', 'intel_hex', 'srec']);
 /** Zip end-of-central-directory signature and the most it can sit from the end (22-byte record plus a 65535-byte comment). */
@@ -84,7 +95,7 @@ const APK_DIRECTORY_MAX = 1 << 20;
  * @property {boolean} exists
  * @property {boolean} isDir
  * @property {string} ext            lower-case extension without the dot ('' when none)
- * @property {string|null} magic     file: pe|managed_pe|native_pe|elf|macho|fat_macho|zip|apk|flutter_apk|ipa|msix|appx|saz|asar|wasm|sqlite|pcap|pcapng|har|qlog|compressed|a firmware magic (uimage, squashfs, cramfs, jffs2, ubi, ubifs, trx, dtb, uf2, dfuse, android_boot, intel_hex, srec); dir: app_bundle|javascript_application|android; else null
+ * @property {string|null} magic     file: pe|managed_pe|native_pe|elf|elf_rel|macho|fat_macho|zip|apk|flutter_apk|ipa|msix|appx|saz|asar|wasm|sqlite|pcap|pcapng|har|qlog|ips|beam|pyc|gguf|safetensors|il2cpp_metadata|cuda_fatbin|pck|compressed|a firmware magic (uimage, squashfs, cramfs, jffs2, ubi, ubifs, trx, dtb, uf2, dfuse, android_boot, intel_hex, srec); dir: app_bundle|javascript_application|android|desktop_application; else null
  * @property {string|null} targetKind route `target_kind` candidate derived from magic/ext, or null
  */
 
@@ -193,8 +204,13 @@ export function describePath(raw, cwd = process.cwd()) {
  * `SQLite format 3\0` → `sqlite`, the pcap and pcapng magics, the firmware
  * container and filesystem magics (`firmwareMagic`), a compressed stream
  * (`compressed`: gzip, xz, lzma, bzip2, zstd, lz4), and the text formats a
- * JSON head reveals (`har`, `qlog`) or a hex record starts (`intel_hex`,
- * `srec`).
+ * JSON head reveals (`har`, `qlog`, an Apple `ips` crash report) or a hex
+ * record starts (`intel_hex`, `srec`). The formats rea-agents 6.8.0 added:
+ * an ELF whose `e_type` is `ET_REL` → `elf_rel` (a `.ko` kernel module routes
+ * on it), `FOR1…BEAM` → `beam`, a CPython `.pyc` header (16-bit magic, `\r\n`)
+ * → `pyc`, `GGUF` → `gguf`, a safetensors header (little-endian u64 length
+ * then `{`) → `safetensors`, `0xFAB11BAF` → `il2cpp_metadata`, `0xBA55ED50`
+ * → `cuda_fatbin`, `GDPC` → `pck` (Godot).
  *
  * @param {string} filePath
  * @param {string} [ext] lower-case extension, used to refine zip containers and text formats
@@ -208,9 +224,17 @@ export function magicOf(filePath, ext = path.extname(String(filePath)).replace(/
     const n = fs.readSync(fd, buf, 0, 64, 0);
     const b = buf.subarray(0, n);
     if (n >= 2 && b[0] === 0x4d && b[1] === 0x5a) return peKind(fd, b, n);
-    if (n >= 4 && b[0] === 0x7f && b[1] === 0x45 && b[2] === 0x4c && b[3] === 0x46) return 'elf';
+    if (n >= 4 && b[0] === 0x7f && b[1] === 0x45 && b[2] === 0x4c && b[3] === 0x46) return elfKind(b, n);
     if (n >= 4) {
       const hex = b.subarray(0, 4).toString('hex');
+      if (hex === IL2CPP_METADATA_HEX) return 'il2cpp_metadata';
+      if (hex === CUDA_FATBIN_HEX) return 'cuda_fatbin';
+      const ascii = b.subarray(0, 4).toString('latin1');
+      if (ascii === 'GGUF') return 'gguf';
+      if (ascii === 'GDPC') return 'pck';
+      if (ascii === 'FOR1' && n >= 12 && b.subarray(8, 12).toString('latin1') === 'BEAM') return 'beam';
+      if (ext === 'pyc' && n >= 16 && b[2] === 0x0d && b[3] === 0x0a) return 'pyc';
+      if (n >= 9 && b[8] === 0x7b && b.readBigUInt64LE(0) <= BigInt(SAFETENSORS_HEADER_MAX) && b.readBigUInt64LE(0) > 0n) return 'safetensors';
       if (hex === 'cffaedfe' || hex === 'cefaedfe' || hex === 'feedfacf' || hex === 'feedface') return 'macho';
       if (hex === 'cafebabe' || hex === 'bebafeca') return 'fat_macho';
       if (b[0] === 0x50 && b[1] === 0x4b && b[2] === 0x03 && b[3] === 0x04) return ext === 'apk' ? apkFlavor(fd) : zipKind(ext);
@@ -244,11 +268,30 @@ export function magicOf(filePath, ext = path.extname(String(filePath)).replace(/
 }
 
 /**
+ * `elf_rel` when the ELF's `e_type` (offset 16, in the byte order `EI_DATA`
+ * names) is `ET_REL`: a relocatable object, which on a `.ko` file is a Linux
+ * kernel module. Every other ELF, and a header too short to read, is `elf`.
+ *
+ * @param {Buffer} b leading bytes
+ * @param {number} n bytes read
+ * @returns {'elf'|'elf_rel'}
+ */
+function elfKind(b, n) {
+  if (n < 18) return 'elf';
+  const type = b[5] === 2 ? b.readUInt16BE(16) : b.readUInt16LE(16);
+  return type === 1 ? 'elf_rel' : 'elf';
+}
+
+/**
  * Directory heuristics: `Contents/MacOS` → app_bundle; `package.json`,
- * `main.js` or `app.asar` → javascript_application; `AndroidManifest.xml` → android.
+ * `main.js` or `app.asar` → javascript_application; `AndroidManifest.xml` →
+ * android; otherwise, from one bounded listing (≤ DIRECTORY_ENTRIES_MAX
+ * entries), a top-level `.exe`, `UnityPlayer.dll`, a `.pck` or a `*_Data`
+ * directory → desktop_application (the installed-application folders
+ * `inspect_desktop_application` triages).
  *
  * @param {string} dir
- * @returns {'app_bundle'|'javascript_application'|'android'|null}
+ * @returns {'app_bundle'|'javascript_application'|'android'|'desktop_application'|null}
  */
 export function dirKind(dir) {
   try {
@@ -257,10 +300,25 @@ export function dirKind(dir) {
       return 'javascript_application';
     }
     if (existsAt(dir, 'AndroidManifest.xml')) return 'android';
+    if (isDesktopApplicationDir(dir)) return 'desktop_application';
   } catch {
     /* ignore */
   }
   return null;
+}
+
+function isDesktopApplicationDir(dir) {
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true }).slice(0, DIRECTORY_ENTRIES_MAX);
+  } catch {
+    return false;
+  }
+  return entries.some((e) => {
+    const name = e.name.toLowerCase();
+    if (e.isDirectory()) return name.endsWith('_data');
+    return name.endsWith('.exe') || name === 'unityplayer.dll' || name.endsWith('.pck');
+  });
 }
 
 /**
@@ -366,6 +424,8 @@ export function targetKindFor(t) {
     case 'native_pe':
     case 'pe':
       return 'native_binary';
+    case 'elf_rel':
+      return t.ext === 'ko' ? 'kernel_module' : 'native_binary';
     case 'managed_pe':
       return 'managed_assembly';
     case 'asar':
@@ -391,6 +451,23 @@ export function targetKindFor(t) {
     case 'saz':
     case 'qlog':
       return 'packet_capture';
+    case 'ips':
+      return 'crash_report';
+    case 'beam':
+      return 'beam_module';
+    case 'pyc':
+      return 'python_bytecode';
+    case 'gguf':
+    case 'safetensors':
+      return 'model_artifact';
+    case 'il2cpp_metadata':
+      return 'il2cpp_metadata';
+    case 'cuda_fatbin':
+      return 'gpu_code_object';
+    case 'pck':
+      return 'package_archive';
+    case 'desktop_application':
+      return 'desktop_application';
     default:
       // `compressed` and unknown magics fall through to the extension: a
       // compressed stream is firmware only when its extension says so.
@@ -431,6 +508,23 @@ export function targetKindFor(t) {
     case 'sqlog':
     case 'mitm':
       return 'packet_capture';
+    case 'ips':
+      return 'crash_report';
+    case 'ko':
+      return 'kernel_module';
+    case 'beam':
+      return 'beam_module';
+    case 'pyc':
+      return 'python_bytecode';
+    case 'gguf':
+    case 'safetensors':
+      return 'model_artifact';
+    case 'cubin':
+    case 'ptx':
+    case 'fatbin':
+      return 'gpu_code_object';
+    case 'pck':
+      return 'package_archive';
     default:
       return FIRMWARE_EXTENSIONS.includes(t.ext) ? 'firmware_image' : null;
   }
@@ -456,9 +550,11 @@ const MAGIC_LABELS = {
   app_bundle: 'a macOS app bundle',
   javascript_application: 'a JavaScript application directory (package.json / main.js / app.asar)',
   android: 'an Android project or extracted package (AndroidManifest.xml)',
+  desktop_application: 'an installed desktop application directory (.exe, UnityPlayer.dll, .pck or *_Data present)',
   macho: 'a Mach-O binary',
   fat_macho: 'a fat (universal) Mach-O binary',
   elf: 'an ELF binary',
+  elf_rel: 'a relocatable ELF object (ET_REL; a kernel module when named .ko)',
   native_pe: 'a native PE binary',
   managed_pe: 'a .NET (managed CLI) PE assembly',
   pe: 'a PE binary (header not parsed)',
@@ -476,6 +572,14 @@ const MAGIC_LABELS = {
   pcapng: 'a pcapng packet capture',
   har: 'a HAR web-traffic recording (JSON)',
   qlog: 'a qlog QUIC trace',
+  ips: 'an Apple .ips crash report (JSON)',
+  beam: 'an Erlang BEAM bytecode module',
+  pyc: 'a CPython .pyc bytecode file',
+  gguf: 'a GGUF model file',
+  safetensors: 'a safetensors model file',
+  il2cpp_metadata: 'a Unity IL2CPP global-metadata file',
+  cuda_fatbin: 'a CUDA fat binary (GPU code objects)',
+  pck: 'a Godot .pck resource pack',
   uimage: 'a U-Boot uImage firmware image',
   squashfs: 'a SquashFS filesystem image (firmware)',
   cramfs: 'a CramFS filesystem image (firmware)',
@@ -664,13 +768,15 @@ function compressedMagic(b, n, hex) {
  * Text formats a 64-byte head reveals: a JSON object whose first keys show a
  * HAR (`"log"`, with `"version"` or a `.har` extension) or a qlog
  * (`"qlog_version"` / `"qlog_format"`, or a JSON-SEQ record separator on a
- * `.qlog`/`.sqlog` file), an Intel HEX record (`:` + 8 hex digits), or a
- * Motorola S-record header (`S0` + 6 hex digits). Null otherwise.
+ * `.qlog`/`.sqlog` file), an Apple crash report (a JSON object on a `.ips`
+ * file, or one whose head shows `"app_name"` or `"bug_type"`), an Intel HEX
+ * record (`:` + 8 hex digits), or a Motorola S-record header (`S0` + 6 hex
+ * digits). Null otherwise.
  *
  * @param {Buffer} b
  * @param {number} n
  * @param {string} ext
- * @returns {'har'|'qlog'|'intel_hex'|'srec'|null}
+ * @returns {'har'|'qlog'|'ips'|'intel_hex'|'srec'|null}
  */
 function textKind(b, n, ext) {
   let i = 0;
@@ -686,6 +792,7 @@ function textKind(b, n, ext) {
   if (head[0] === '{') {
     if (/"qlog_(?:version|format)"/.test(head) || (jsonSeq && (ext === 'qlog' || ext === 'sqlog'))) return 'qlog';
     if (/"log"\s*:/.test(head) && (ext === 'har' || /"version"\s*:/.test(head))) return 'har';
+    if (ext === 'ips' || /"(?:app_name|bug_type)"\s*:/.test(head)) return 'ips';
     return null;
   }
   if (jsonSeq) return ext === 'qlog' || ext === 'sqlog' ? 'qlog' : null;

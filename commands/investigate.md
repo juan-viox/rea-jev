@@ -34,6 +34,15 @@ JavaScript tree or a .NET assembly.
 | `.wasm` module | wasm_module | `inspect_wasm_artifact` | `inspect_analysis_view` for WAT pages; `compare_wasm_interfaces` across two inspections |
 | `.sqlite`, `.db` (SQLite magic) | sqlite_database | `inspect_sqlite_database` | the same tool with `table` and `columns` |
 | `.apk` whose central directory lists `lib/*/libflutter.so` | flutter_app | `identify_flutter_build` | `inspect_dart_aot`; `inspect_android_package` for the rest of the package |
+| Apple `.ips` crash report (a JSON object with `app_name` and `bug_type`) | crash_report | `inspect_apple_ips` | `open_binary` on the crashing image for the frames it names |
+| `.ko` Linux kernel module (relocatable ELF, `ET_REL`) | kernel_module | `inspect_kernel_module` | `inspect_elf_notes`; `open_binary` for procedure-level work |
+| `.beam` Erlang/Elixir module (`FOR1` … `BEAM`) | beam_module | `inspect_erlang_beam` | the same tool with a chunk or atom selection |
+| `.pyc` CPython bytecode (16-bit magic, `\r\n`) | python_bytecode | `inspect_python_pyc` | the same tool with a code-object selection |
+| `.gguf` (`GGUF`) or `.safetensors` (8-byte header length, then JSON) model file | model_artifact | `inspect_model_artifact` | `inspect_byte_entropy` |
+| Unity `global-metadata.dat` (`0xFAB11BAF`) | il2cpp_metadata | `inspect_il2cpp_metadata`, with the GameAssembly binary when it is next to it | `open_binary` on the GameAssembly |
+| CUDA fatbin (`0xBA55ED50`), `.cubin`, `.ptx`, or an ELF/PE host with GPU code objects | gpu_code_object | `inspect_gpu_code_objects` | the same tool with an object selection |
+| An installed desktop application folder (a top-level `.exe`, `UnityPlayer.dll`, a `.pck` or a `*_Data` directory) | desktop_application | `inspect_desktop_application` | the tool its candidates name: `open_binary`, `inspect_managed_artifact`, `inspect_il2cpp_metadata`, `analyze_javascript_application` |
+| Godot `.pck` (`GDPC`), PyInstaller archive, Node.js SEA carrier | package_archive | `open_binary` | `inspect_artifact`, `extract_artifact`, then re-route the inner artifact |
 | A page the user has open in a browser started with remote debugging (a loopback CDP endpoint such as `http://127.0.0.1:9222`; a bare page URL is not enough, ask for the endpoint) | website_in_browser | `list_browser_targets` | `inspect_web_page`, `analyze_web_bundle`; `observe_web_session` only if asked |
 | Running Electron or Node with an inspector endpoint | electron_or_node_runtime | `list_electron_targets` or `list_javascript_runtime_targets` | `inspect_electron_page`; `observe_javascript_runtime` only if asked |
 | A source repository the user already has | source_repository | none | Use ordinary repository tools; REA is not needed |

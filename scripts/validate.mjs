@@ -68,6 +68,8 @@ export const SPEC_VOCABULARY = new Set([
   'trace_crash', 'audit_residual_unknowns', 'prepare_bounded_process_capture',
   // Claude Code hook input fields named in the decision-point docs
   'stop_hook_active',
+  // Jev question keys in the skill's recipes (`match_` is a tool verb since rea-agents 6.8.0)
+  'match_exists',
   // REA Evidence ID prefix used in prose
   'ev_',
 ]);
@@ -101,8 +103,8 @@ export function effectClass(tool) {
   if (
     /^(set_|annotate_|import_|export_|open_|close_)/.test(n) ||
     [
-      'unset_bookmark', 'record_unknown', 'update_unknown', 'extract_artifact', 'extract_firmware', 'recover_javascript_sources',
-      'pull_adb_file', 'pull_adb_package', 'collect_adb_bugreport', 'unload_frida_script',
+      'unset_bookmark', 'record_unknown', 'update_unknown', 'extract_artifact', 'extract_firmware', 'recover_javascript_sources', 'decompile_all',
+      'pull_adb_file', 'pull_adb_package', 'collect_adb_bugreport', 'unload_frida_script', 'update_analysis_settings',
     ].includes(n)
   ) return 'mutation';
   if (
@@ -200,7 +202,7 @@ export function generateToolCatalogMarkdown(catalog) {
   out.push('**Effect class** is what the rea-jev gate (`scripts/lib/rea.mjs`) uses, derived from the name and the catalog effect flags (`launchesProcess`, `mutatesTarget`, `executesForeignCode`, `mutatesDevice`):', '');
   out.push('| Class | Rule | Gate behavior |', '|---|---|---|');
   out.push(`| \`runtime\` (${counts.runtime}) | the debugger, instrumentation and device-control tools (\`start_frida_session\`, \`instrument_with_frida\`, \`load_frida_script\`, \`resume_frida_session\`, \`start_gdb_session\`, \`gdb_console\`, \`start_rizin_debug_session\`, \`rizin_debug_command\`, \`execute_rizin_command\`, \`cutter_command\`, \`install_adb_package\`, \`uninstall_adb_package\`, \`push_adb_file\`, \`start_adb_app\`, \`start_adb_activity\`, \`stop_adb_app\`); a \`capture_*\` or \`observe_*\` tool that launches a process, mutates the target or executes foreign code; any tool whose effects say \`executesForeignCode\` or \`mutatesDevice\` | local hard rules, then a Jev scope/risk check; may \`ask\` or \`deny\` |`);
-  out.push(`| \`mutation\` (${counts.mutation}) | \`set_*\`, \`annotate_*\`, \`import_*\`, \`export_*\`, \`open_*\`, \`close_*\`, \`unset_bookmark\`, \`record_unknown\`, \`update_unknown\`, \`extract_artifact\`, \`extract_firmware\`, \`recover_javascript_sources\`, \`pull_adb_file\`, \`pull_adb_package\`, \`collect_adb_bugreport\`, \`unload_frida_script\` | never deduplicated; resets the redundancy window |`);
+  out.push(`| \`mutation\` (${counts.mutation}) | \`set_*\`, \`annotate_*\`, \`import_*\`, \`export_*\`, \`open_*\`, \`close_*\`, \`unset_bookmark\`, \`record_unknown\`, \`update_unknown\`, \`extract_artifact\`, \`extract_firmware\`, \`recover_javascript_sources\`, \`decompile_all\`, \`pull_adb_file\`, \`pull_adb_package\`, \`collect_adb_bugreport\`, \`unload_frida_script\`, \`update_analysis_settings\` | never deduplicated; resets the redundancy window |`);
   out.push(`| \`status\` (${counts.status}) | \`binary_session\`, \`list_unknowns\`, \`get_navigation_context\`, \`current_*\`, \`*_session_status\`, \`get_evidence_bundle\`, \`verify_unknown_resolution\`, \`list_documents\`, \`list_cutter_sessions\`, \`list_frida_devices\`, \`list_frida_processes\`, \`list_adb_devices\` | never deduplicated, never sent to Jev |`);
   out.push(`| \`inspect\` (${counts.inspect}) | everything else | an identical repeated call (same tool + same input) is denied until a mutation happens; results are scored by the evidence hook |`, '');
   out.push(`Contents: ${[...byKind].map(([k, list]) => `[${k}](#${k}-${list.length}-tools)`).join(' · ')}`, '');

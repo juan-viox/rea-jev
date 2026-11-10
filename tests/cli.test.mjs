@@ -425,7 +425,7 @@ describe('doctor', () => {
     assert.equal(j.provider, null);
     assert.equal(j.round_trip.reason, 'no_key');
     assert.ok(j.problems.some((p) => /TYPESAFE_API_KEY/.test(p)));
-    assert.equal(j.rea.pin, '6.5.0');
+    assert.equal(j.rea.pin, '6.8.0');
     assert.equal(j.rea.npx.status, 'skipped');
     assert.equal(j.ledger.dir, tmp);
     assert.equal(j.mode, 'advise');
@@ -447,7 +447,7 @@ describe('doctor', () => {
     assert.equal(j.provider.key_source, 'TYPESAFE_API_KEY');
     assert.equal(j.provider.endpoint_override, true);
     assert.equal(j.mode, 'enforce');
-    assert.equal(j.rea.catalog_tools, 207);
+    assert.equal(j.rea.catalog_tools, 229);
     assert.equal(j.ledger.writable, true);
     assert.doesNotMatch(r.stdout, /test-key-not-real/, 'the key must never be printed');
   });

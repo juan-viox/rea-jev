@@ -19,6 +19,20 @@ after(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+/** Minimal 64-byte ELF64 header with the given `e_type` (1 = ET_REL, 2 = ET_EXEC, 3 = ET_DYN). */
+function buildElf({ type, bigEndian = false }) {
+  const buf = Buffer.alloc(64, 0);
+  buf.write('\x7fELF', 0, 'latin1');
+  buf[4] = 2; // ELFCLASS64
+  buf[5] = bigEndian ? 2 : 1;
+  buf[6] = 1;
+  if (bigEndian) buf.writeUInt16BE(type, 16);
+  else buf.writeUInt16LE(type, 16);
+  if (bigEndian) buf.writeUInt16BE(0xb7, 18);
+  else buf.writeUInt16LE(0xb7, 18); // aarch64
+  return buf;
+}
+
 /** Minimal PE image: MZ header, e_lfanew, PE signature, COFF, optional header with 16 data dirs. */
 function buildPe({ managed, plus = false }) {
   const lfanew = 0x80;
@@ -159,6 +173,89 @@ describe('magic detection (artifact kinds rea-agents 6.5.0 reads)', () => {
   });
 });
 
+describe('magic detection (artifact kinds rea-agents 6.8.0 reads)', () => {
+  test('BEAM, GGUF, safetensors, IL2CPP metadata, CUDA fatbin, Godot PCK, CPython pyc', () => {
+    assert.equal(magicOf(write('m.beam', Buffer.concat([Buffer.from('FOR1', 'latin1'), Buffer.from([0, 0, 0, 40]), Buffer.from('BEAM', 'latin1'), Buffer.alloc(40)]))), 'beam');
+    assert.equal(magicOf(write('iff.bin', Buffer.concat([Buffer.from('FOR1', 'latin1'), Buffer.from([0, 0, 0, 40]), Buffer.from('AIFF', 'latin1'), Buffer.alloc(40)]))), null, 'an IFF form that is not BEAM');
+    assert.equal(magicOf(write('model.gguf', Buffer.concat([Buffer.from('GGUF', 'latin1'), Buffer.from([3, 0, 0, 0]), Buffer.alloc(56)]))), 'gguf');
+    const st = Buffer.alloc(64);
+    st.writeBigUInt64LE(24n, 0);
+    st.write('{"__metadata__":{"a":"b"}}', 8, 'latin1');
+    assert.equal(magicOf(write('model.safetensors', st)), 'safetensors');
+    const huge = Buffer.alloc(64);
+    huge.writeBigUInt64LE(1n << 40n, 0);
+    huge.write('{', 8, 'latin1');
+    assert.equal(magicOf(write('not.safetensors', huge)), null, 'an implausible header length is not a safetensors header');
+    assert.equal(magicOf(write('global-metadata.dat', Buffer.concat([Buffer.from('af1bb1fa', 'hex'), Buffer.from([24, 0, 0, 0]), Buffer.alloc(56)]))), 'il2cpp_metadata');
+    assert.equal(magicOf(write('kernel.fatbin', Buffer.concat([Buffer.from('50ed55ba', 'hex'), Buffer.from([1, 0, 0, 0]), Buffer.alloc(56)]))), 'cuda_fatbin');
+    assert.equal(magicOf(write('game.pck', Buffer.concat([Buffer.from('GDPC', 'latin1'), Buffer.from([2, 0, 0, 0]), Buffer.alloc(56)]))), 'pck');
+    const pyc = Buffer.alloc(32);
+    pyc.writeUInt16LE(3571, 0); // CPython 3.13
+    pyc.write('\r\n', 2, 'latin1');
+    assert.equal(magicOf(write('mod.cpython-313.pyc', pyc)), 'pyc');
+    assert.equal(magicOf(write('mod.bin', pyc)), null, 'the pyc header is read for .pyc only');
+  });
+  test('an ELF whose e_type is ET_REL is elf_rel in either byte order; an executable stays elf', () => {
+    assert.equal(magicOf(write('mod.ko', buildElf({ type: 1 }))), 'elf_rel');
+    assert.equal(magicOf(write('mod-be.ko', buildElf({ type: 1, bigEndian: true }))), 'elf_rel');
+    assert.equal(magicOf(write('prog.elf', buildElf({ type: 2 }))), 'elf');
+    assert.equal(magicOf(write('lib.so', buildElf({ type: 3 }))), 'elf');
+    assert.equal(magicOf(write('short.elf', Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0]))), 'elf', 'a header too short to read e_type is elf');
+  });
+  test('an Apple .ips crash report from its JSON head or its name', () => {
+    assert.equal(magicOf(write('crash.ips', '{"app_name":"Notes","timestamp":"2026-10-20 10:00:00.00 -0400","app_version":"4.11","bug_type":"309"}\n{"uptime":100}')), 'ips');
+    assert.equal(magicOf(write('report.txt', '{"app_name":"Notes","timestamp":"2026-10-20 10:00:00.00 -0400"}')), 'ips', 'the head names the report');
+    assert.equal(magicOf(write('named.ips', '{"other":1}')), 'ips');
+    assert.equal(magicOf(write('plain.json', '{"other":1}')), null);
+  });
+});
+
+describe('target kinds and hints (artifact kinds rea-agents 6.8.0 reads)', () => {
+  test('magic → target kind', () => {
+    const byMagic = {
+      ips: 'crash_report', beam: 'beam_module', pyc: 'python_bytecode', gguf: 'model_artifact', safetensors: 'model_artifact',
+      il2cpp_metadata: 'il2cpp_metadata', cuda_fatbin: 'gpu_code_object', pck: 'package_archive', desktop_application: 'desktop_application',
+    };
+    for (const [magic, kind] of Object.entries(byMagic)) assert.equal(targetKindFor({ exists: true, isDir: magic === 'desktop_application', ext: 'bin', magic }), kind, magic);
+    assert.equal(targetKindFor({ exists: true, isDir: false, ext: 'ko', magic: 'elf_rel' }), 'kernel_module');
+    assert.equal(targetKindFor({ exists: true, isDir: false, ext: 'o', magic: 'elf_rel' }), 'native_binary', 'a relocatable object that is not a .ko is a native binary');
+  });
+  test('extension fallback for a file that is missing or unrecognized', () => {
+    const byExt = {
+      ips: 'crash_report', ko: 'kernel_module', beam: 'beam_module', pyc: 'python_bytecode', gguf: 'model_artifact', safetensors: 'model_artifact',
+      cubin: 'gpu_code_object', ptx: 'gpu_code_object', fatbin: 'gpu_code_object', pck: 'package_archive', dat: null,
+    };
+    for (const [ext, kind] of Object.entries(byExt)) {
+      assert.equal(targetKindFor({ exists: false, isDir: false, ext, magic: null }), kind, ext);
+      assert.equal(describePath(`/nope/thing.${ext}`, dir).targetKind, kind, ext);
+      if (kind) assert.ok(TARGET_EXTENSIONS.includes(ext), `${ext} makes a bare token a path candidate`);
+    }
+  });
+  test('bare filenames with the 6.8.0 extensions are path tokens', () => {
+    const s = sniffPrompt('read crash-2026.ips, nf_tables.ko, cowboy_router.beam, settings.cpython-313.pyc and llama.gguf', dir);
+    assert.deepEqual(
+      s.pathTokens.map((t) => [t.raw, t.exists, t.targetKind]),
+      [
+        ['crash-2026.ips', false, 'crash_report'], ['nf_tables.ko', false, 'kernel_module'], ['cowboy_router.beam', false, 'beam_module'],
+        ['settings.cpython-313.pyc', false, 'python_bytecode'], ['llama.gguf', false, 'model_artifact'],
+      ],
+    );
+  });
+  test('existing files carry their format in the hint', () => {
+    const ko = write('hello.ko', buildElf({ type: 1 }));
+    const gguf = write('tiny.gguf', Buffer.concat([Buffer.from('GGUF', 'latin1'), Buffer.from([3, 0, 0, 0]), Buffer.alloc(56)]));
+    const s = sniffPrompt(`inspect ${ko} and ${gguf}`, dir);
+    assert.ok(s.hints.includes(`path ${ko} is a relocatable ELF object (ET_REL; a kernel module when named .ko)`), s.hints.join('|'));
+    assert.ok(s.hints.includes(`path ${gguf} is a GGUF model file`), s.hints.join('|'));
+    assert.equal(s.pathTokens[0].targetKind, 'kernel_module');
+    assert.equal(s.declaredTarget, ko);
+  });
+  test('the new keywords pass the pre-filter', () => {
+    for (const p of ['read this crash report', 'what does the kernel module do', 'decode the bytecode', 'inspect the il2cpp metadata', 'what is in the safetensors']) assert.ok(KEYWORD_RE.test(p), p);
+    assert.equal(KEYWORD_RE.test('a beam of light'), false);
+  });
+});
+
 describe('target kinds and hints (artifact kinds rea-agents 6.5.0 reads)', () => {
   test('magic → target kind', () => {
     const byMagic = {
@@ -245,6 +342,22 @@ describe('directory heuristics', () => {
     const plain = path.join(dir, 'plain');
     fs.mkdirSync(plain, { recursive: true });
     assert.equal(dirKind(plain), null);
+  });
+  test('a folder with a top-level .exe, UnityPlayer.dll, a .pck or a *_Data directory → desktop_application', () => {
+    const game = path.join(dir, 'Game');
+    fs.mkdirSync(path.join(game, 'Game_Data'), { recursive: true });
+    assert.equal(dirKind(game), 'desktop_application');
+    const win = path.join(dir, 'WinApp');
+    fs.mkdirSync(win, { recursive: true });
+    fs.writeFileSync(path.join(win, 'App.exe'), buildPe({ managed: false }));
+    assert.equal(dirKind(win), 'desktop_application');
+    const electronWin = path.join(dir, 'ElectronWin');
+    fs.mkdirSync(path.join(electronWin, 'resources'), { recursive: true });
+    fs.writeFileSync(path.join(electronWin, 'App.exe'), buildPe({ managed: false }));
+    fs.writeFileSync(path.join(electronWin, 'resources', 'app.asar'), asarBuffer());
+    assert.equal(dirKind(electronWin), 'javascript_application', 'an unpacked Electron app is a JavaScript application first');
+    assert.equal(describePath(game, dir).targetKind, 'desktop_application');
+    assert.ok(sniffPrompt(`what engine does ${game} use`, dir).hints.includes(`path ${game} is an installed desktop application directory (.exe, UnityPlayer.dll, .pck or *_Data present)`));
   });
   test('an Electron .app bundle is an app_bundle first', () => {
     const app = path.join(dir, 'Slack.app');

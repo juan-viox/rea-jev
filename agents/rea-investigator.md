@@ -56,7 +56,9 @@ When something is missing, do what can be done and name the gap under
   literal probes (`search_strings`, `find_xrefs_to_name`, `trace_feature`,
   `xrefs`, `procedure_callers`) before broad listings. Decompile
   (`procedure_pseudo_code`, `analyze_function`) only the procedures a hypothesis
-  needs. One hypothesis per batch of calls.
+  needs; `analyze_function` returns a retained summary by default (page it
+  with `inspect_analysis_view`, or pass `detail: "complete"`). One hypothesis
+  per batch of calls.
 - When a result has more than about 30 candidates, do not read them all. Hand
   them to System 1:
   `node "${CLAUDE_PLUGIN_ROOT}/scripts/jev.mjs" rank "<what you are looking for>" --items <file> --top 15`

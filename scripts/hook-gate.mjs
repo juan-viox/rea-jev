@@ -12,7 +12,8 @@
  *      `application_path`) outside cwd and the declared target, or a
  *      credential in the scenario environment → ask
  *   4. Jev gate, only for runtime-class tools and for the file-moving tools
- *      (extract, export, import, recover, ADB pulls) with paths outside cwd:
+ *      (extract, export, import, recover, decompile_all, ADB pulls) with
+ *      paths outside cwd:
  *      within_scope / irreversible / runtime_requested.
  *      A `deny` (enforce) needs the deciding answer at or above the `confirm`
  *      band and a declared target; otherwise the decision degrades to `ask`.
@@ -45,6 +46,7 @@ const USER_REQUEST_MAX = 600;
 const PATH_GATED_TOOLS = new Set([
   'extract_artifact', 'extract_firmware', 'export_evidence_bundle', 'export_web_scripts', 'import_evidence_bundle',
   'recover_javascript_sources', 'pull_adb_file', 'pull_adb_package', 'collect_adb_bugreport',
+  'decompile_all', 'export_environment_bundle',
 ]);
 /**
  * Top-level inputs of runtime-class tools that name the program REA will run,
