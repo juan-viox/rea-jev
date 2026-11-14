@@ -1,5 +1,7 @@
 # rea-jev
 
+[![Featured by Awesome REA](https://raw.githubusercontent.com/reacher-z/Awesome-REA/main/assets/featured-by-awesome-rea-inline.svg)](https://github.com/reacher-z/Awesome-REA)
+
 **Reverse-engineer anything with agents, with a System 1 reflex layer.**
 
 rea-jev is a Claude Code plugin that pairs [REA](https://github.com/morluto/rea)
