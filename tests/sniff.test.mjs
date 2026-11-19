@@ -436,6 +436,7 @@ describe('sniffPrompt', () => {
     assert.equal(safeUrl('not a url token=abcdef'), 'not a url token=[REDACTED:kv]');
   });
   test('a FIFO mentioned in the prompt is stat-ed but never opened (no blocking read)', () => {
+    if (process.platform === 'win32') return; // no POSIX FIFOs for native Windows node
     const fifo = path.join(dir, 'myfifo');
     try {
       execFileSync('mkfifo', [fifo]);

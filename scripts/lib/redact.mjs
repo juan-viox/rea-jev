@@ -91,7 +91,7 @@ export const SECRET_PATTERNS = Object.freeze(
       // A `::` is a scope operator (`Name::member`), not an assignment: the
       // separator is `=` or a single `:`, and the value may not begin with `:`.
       kind: 'kv',
-      re: /((?:password|passwd|secret|token|api[_-]?key|apikey|access[_-]?key|client[_-]?secret|sessionid|session|cookie|auth)(?:["']?\s*(?:=|:(?!:))\s*["']?)|pwd(?:["']?\s*(?:=|:(?!:))\s*["']?)(?![/~]))(?!\[REDACTED:)(?!:)([^\s"'&,;}\])]{3,})/gi,
+      re: /((?:password|passwd|secret|token|api[_-]?key|apikey|access[_-]?key|client[_-]?secret|sessionid|session|cookie|auth)(?:["']?\s*(?:=|:(?!:))\s*["']?)|pwd(?:["']?\s*(?:=|:(?!:))\s*["']?)(?![/~]|[a-z]:[\\/]))(?!\[REDACTED:)(?!:)([^\s"'&,;}\])]{3,})/gi,
       replace: '$1[REDACTED:kv]',
     },
     {
@@ -160,7 +160,7 @@ export function redactObject(value, depth = 0) {
 export function isCredentialKey(key, value) {
   const k = String(key ?? '');
   if (!CREDENTIAL_KEY_RE.test(k)) return false;
-  if (/pwd$/i.test(k) && typeof value === 'string' && /^[/~]/.test(value)) return false;
+  if (/pwd$/i.test(k) && typeof value === 'string' && /^(?:[/~]|[A-Za-z]:[\\/])/.test(value)) return false;
   return true;
 }
 

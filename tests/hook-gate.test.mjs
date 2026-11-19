@@ -180,7 +180,7 @@ describe('rule 3: hard rules (local)', () => {
     seedLedger(tmp, session, [routeEvent]);
     const r = await runHook('hook-gate', payload('pre-capture-process-out-of-scope.json', { session_id: session, cwd: tmp }), env());
     assert.equal(decision(r), 'ask');
-    assert.match(reason(r), /would run \/opt\/unrelated\/bin\/other-tool, which is outside the working directory and the declared target/);
+    assert.match(reason(r), /would run (?:[A-Za-z]:)?[\\/]opt[\\/]unrelated[\\/]bin[\\/]other-tool, which is outside the working directory and the declared target/);
     assert.equal(fake.requests.length, before);
     assert.equal(lastPre(session).source, 'local');
   });
@@ -203,7 +203,7 @@ describe('rule 3: hard rules (local)', () => {
       env(),
     );
     assert.equal(decision(r), 'ask');
-    assert.match(reason(r), /\/opt\/unrelated\/bin\/other-tool/);
+    assert.match(reason(r), /(?:[A-Za-z]:)?[\\/]opt[\\/]unrelated[\\/]bin[\\/]other-tool/);
   });
   test('scenario environment with a credential → ask, and the ledger excerpt is redacted', async () => {
     const session = newSession('gate');
@@ -516,7 +516,7 @@ describe('rea-agents 6.5.0 tool classes', () => {
       env(),
     );
     assert.equal(decision(r), 'ask');
-    assert.match(reason(r), /start_rizin_debug_session would run \/opt\/unrelated\/bin\/other-tool, which is outside the working directory and the declared target/);
+    assert.match(reason(r), /start_rizin_debug_session would run (?:[A-Za-z]:)?[\\/]opt[\\/]unrelated[\\/]bin[\\/]other-tool, which is outside the working directory and the declared target/);
     assert.equal(fake.requests.length, before);
     assert.equal(lastPre(session).source, 'local');
   });

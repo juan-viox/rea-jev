@@ -57,13 +57,13 @@ export const KEYWORD_RE = (() => {
 const MAX_TOKENS = 16;
 const EXT_ALT = TARGET_EXTENSIONS.join('|');
 /** `<` in the lookbehind keeps a closing XML tag (`</task-id>`) from reading as the path `/task-id`. */
-const UNQUOTED_PATH_RE = /(?<![\w@:/.\-~<])((?:~|\.{1,2})?\/[^\s"'`<>|;()[\]{}]+)/g;
+const UNQUOTED_PATH_RE = /(?<![\w@:/.\-~<])((?:~|\.{1,2})?\/[^\s"'`<>|;()[\]{}]+|[A-Za-z]:[\\/][^\s"'`<>|;()[\]{}]+)/g;
 /** A leading slash command (`/name`, `/plugin:name`): one segment, no dot, nothing but whitespace after it. */
 const SLASH_COMMAND_RE = /^\s*\/[A-Za-z][\w-]*(?::[A-Za-z][\w-]*)?(?=\s|$)/;
 /** A prompt that is one or more XML elements and nothing else: the host's own envelopes, not the user's words. */
 const ENVELOPE_RE = /^\s*<[a-z][\w-]*(?:\s[^<>]*)?>[\s\S]*<\/[a-z][\w-]*>\s*$/i;
 const QUOTED_RE = /"([^"\n]{2,400})"|'([^'\n]{2,400})'|`([^`\n]{2,400})`/g;
-const BARE_FILE_RE = new RegExp(`(?<![\\w/.\\-])([\\w][\\w.\\-]*\\.(?:${EXT_ALT}))(?![\\w\\-]|\\.\\w)`, 'gi');
+const BARE_FILE_RE = new RegExp(`(?<![\\w/\\\\.\\-])([\\w][\\w.\\-]*\\.(?:${EXT_ALT}))(?![\\w\\-]|\\.\\w)`, 'gi');
 const URL_RE = /\b(?:https?|wss?):\/\/[^\s"'<>`)\]]+/gi;
 const HOST_PORT_RE = /(?<![\w.:/@-])((?:localhost|\[[0-9a-f:]+\]|\d{1,3}(?:\.\d{1,3}){3}|[a-z0-9-]+(?:\.[a-z0-9-]+)+):(\d{2,5}))(?![\w.])/gi;
 const REMOTE_DEBUG_RE = /--remote-debugging-port[= ](\d{2,5})/gi;

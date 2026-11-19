@@ -980,7 +980,10 @@ function hooksStatus(env) {
 
 function probeCommand(cmd, args, timeout) {
   try {
-    const r = spawnSync(cmd, args, { encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'pipe'] });
+    // On Windows npx is npx.cmd, which spawn cannot start without a shell. The args
+    // are fixed strings, so a shell is only used when they are all plain tokens.
+    const shell = process.platform === 'win32' && args.every((a) => /^[\w@.-]+$/.test(a));
+    const r = spawnSync(cmd, args, { encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'pipe'], shell });
     if (r.error) return { status: r.error.code === 'ENOENT' ? 'missing' : 'failed', detail: r.error.code ?? r.error.message, command: [cmd, ...args].join(' ') };
     if (r.status !== 0) return { status: 'failed', detail: `exit ${r.status}: ${(r.stderr || r.stdout || '').trim().slice(0, 200)}`, command: [cmd, ...args].join(' ') };
     return { status: 'ok', version: (r.stdout || '').trim().split('\n').pop().slice(0, 80), command: [cmd, ...args].join(' ') };

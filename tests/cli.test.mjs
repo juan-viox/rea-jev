@@ -504,7 +504,7 @@ describe('stats', () => {
     assert.equal(rec.command, 'ask');
     assert.ok(rec.t > 0 && rec.latency_ms >= 0);
     const st = fs.statSync(path.join(home, 'decisions.jsonl'));
-    assert.equal(st.mode & 0o777, 0o600);
+    if (process.platform !== 'win32') assert.equal(st.mode & 0o777, 0o600);
   });
 });
 

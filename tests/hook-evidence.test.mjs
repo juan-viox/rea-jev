@@ -518,7 +518,7 @@ describe('host size notice (result saved to a file)', () => {
       seedLedger(tmp, session, [routeEvent]);
       script(QUIET);
       const current = notice(file).replace(' characters)', ' characters across 1 line)');
-      const r = await runHook('hook-evidence', { ...asNotice('post-search-strings.json', current), session_id: session }, env({ extra: { HOME: home } }));
+      const r = await runHook('hook-evidence', { ...asNotice('post-search-strings.json', current), session_id: session }, env({ extra: { HOME: home, USERPROFILE: home } }));
       assert.equal(r.code, 0, r.stderr);
       assert.equal(r.stdout, '', 'quiet answers, no warning');
       assert.equal(fake.requests.length, before + 1, 'Jev was asked about the recovered result');
@@ -553,8 +553,14 @@ describe('host size notice (result saved to a file)', () => {
       const noEvidenceId = write(path.join(dir, 'mcp-plugin_rea-jev_rea-search_strings-6.txt'), JSON.stringify({ result: { x: 'y'.repeat(500) } }));
       const notJson = write(path.join(dir, 'mcp-plugin_rea-jev_rea-search_strings-2.txt'), 'just some text, not JSON '.repeat(40));
       const linkedFile = path.join(dir, 'mcp-plugin_rea-jev_rea-search_strings-7.txt');
-      fs.symlinkSync(outsideRoot, linkedFile);
-      fs.symlinkSync(path.dirname(outsideRoot), path.join(dir, 'linkdir'));
+      let canSymlink = true;
+      try {
+        fs.symlinkSync(outsideRoot, linkedFile);
+        fs.symlinkSync(path.dirname(outsideRoot), path.join(dir, 'linkdir'));
+      } catch (e) {
+        if (e.code !== 'EPERM') throw e; // Windows without symlink privilege
+        canSymlink = false;
+      }
       const throughLinkedDir = path.join(dir, 'linkdir', 'mcp-plugin_rea-jev_rea-search_strings-3.txt');
       const cases = [
         ['missing file', path.join(dir, 'mcp-plugin_rea-jev_rea-search_strings-9.txt')],
@@ -563,15 +569,14 @@ describe('host size notice (result saved to a file)', () => {
         ['saved for another tool', otherTool],
         ['REA-shaped but no evidence_id', noEvidenceId],
         ['not JSON', notJson],
-        ['a symlink in place of the file', linkedFile],
-        ['a symlinked directory on the way', throughLinkedDir],
+        ...(canSymlink ? [['a symlink in place of the file', linkedFile], ['a symlinked directory on the way', throughLinkedDir]] : []),
       ];
       for (const [label, file] of cases) {
         const before = fake.requests.length;
         const session = newSession('evidence');
         seedLedger(tmp, session, [routeEvent]);
         script({ ...QUIET, agent_directed_text: 0.95 });
-        const r = await runHook('hook-evidence', { ...asNotice('post-search-strings.json', notice(file)), session_id: session }, env({ extra: { HOME: home } }));
+        const r = await runHook('hook-evidence', { ...asNotice('post-search-strings.json', notice(file)), session_id: session }, env({ extra: { HOME: home, USERPROFILE: home } }));
         assert.equal(r.code, 0, `${label}: ${r.stderr}`);
         assert.equal(r.stdout, '', `${label}: no warning, the notice is not judged`);
         assert.equal(fake.requests.length, before, `${label}: no Jev call`);
@@ -597,7 +602,7 @@ describe('host size notice (result saved to a file)', () => {
       const session = newSession('evidence');
       seedLedger(tmp, session, [routeEvent]);
       script(QUIET);
-      const r = await runHook('hook-evidence', { ...asNotice('post-search-strings.json', notice(file)), session_id: session }, env({ extra: { HOME: home, CLAUDE_CONFIG_DIR: configDir } }));
+      const r = await runHook('hook-evidence', { ...asNotice('post-search-strings.json', notice(file)), session_id: session }, env({ extra: { HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: configDir } }));
       assert.equal(r.code, 0, r.stderr);
       assert.equal(fake.requests.length, before + 1, 'recovered through the relocated config dir');
       assert.equal(lastPost(session).recovered, true);

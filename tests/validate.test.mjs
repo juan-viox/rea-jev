@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -40,7 +41,7 @@ test('validate.mjs lists failures and exits 1 on a broken tree', () => {
 });
 
 test('generated tool catalog has one table per catalog kind and the documented columns', async () => {
-  const { generateToolCatalogMarkdown, effectClass } = await import(VALIDATE);
+  const { generateToolCatalogMarkdown, effectClass } = await import(pathToFileURL(VALIDATE).href);
   const catalog = JSON.parse(readFileSync(join(ROOT, 'data', 'rea-tool-catalog.json'), 'utf8'));
   const md = generateToolCatalogMarkdown(catalog);
   const kinds = new Set(catalog.tools.map((t) => t.kind));
